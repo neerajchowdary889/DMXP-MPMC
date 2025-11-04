@@ -1,4 +1,3 @@
-use crate::mpmc::buffer::SlotHeader;
 use crossbeam_utils::CachePadded;
 use std::sync::atomic::AtomicU64;
 

@@ -8,17 +8,17 @@ use crossbeam_utils::CachePadded;
 /// It is marked `#[repr(C)]` to ensure a defined and stable memory layout,
 /// which is critical for shared memory and inter-process communication.
 #[repr(C)]
-pub(crate) struct SlotHeader {
+pub struct SlotHeader {
     /// The sequence number of the slot. This is the core of the synchronization.
     /// - A producer claims a `tail_cursor` sequence and waits for the `sequence` in
     ///   the target slot to equal `tail_cursor - capacity`.
     /// - After writing, it sets the `sequence` to `tail_cursor`, signaling completion.
     /// - A consumer waits for the `sequence` in its `head_cursor` slot to equal
     ///   `head_cursor + 1`.
-    pub(crate) sequence: AtomicU64,
+    pub sequence: AtomicU64,
 
     /// The length of the message payload that follows this header.
-    pub(crate) length: AtomicU64,
+    pub length: AtomicU64,
 }
 
 /// A high-performance, lock-free, multi-producer, multi-consumer (MPMC) ring buffer.
@@ -62,3 +62,4 @@ pub struct RingBuffer {
     /// This is the primary point of contention for consumers.
     pub(crate) head_cursor: CachePadded<AtomicU64>,
 }
+

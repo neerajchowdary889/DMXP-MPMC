@@ -10,3 +10,10 @@ repository = "https://github.com/your-username/DMXP-KVCache" # Replace with your
 
 [dependencies]
 crossbeam-utils = "0.8"
+
+[dev-dependencies]
+memoffset = "0.9"
+
+[lib]
+name = "dmxp_kvcache"
+path = "src/lib.rs"
