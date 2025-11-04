@@ -7,10 +7,10 @@
 "tu": "µs",
 "Mtu": "s",
 "tuth": 10,
-"cmd": "D:\\CodeSection\\DMXP-KVCache\\target\\debug\\deps\\allocation_test-c4d322347fd6f575.exe track_allocations_with_dhat --nocapture",
-"pid": 28564,
+"cmd": "D:\\CodeSection\\DMXP-KVCache\\target\\debug\\deps\\allocation_tracking-9a559f4efda33a47.exe --nocapture",
+"pid": 15188,
 "tg": 0,
-"te": 272,
+"te": 25616,
 "pps": [],
 "ftbl": [
 "[root]"

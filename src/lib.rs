@@ -12,5 +12,10 @@ pub mod MPMC {
         pub use Buffer_Structs::MessageMeta; // re-export for stable path
     }
 }
+#[allow(non_snake_case)]
+pub mod Core {
+    pub mod SharedMemory;
+    pub use SharedMemory::{SharedMemoryBackend, RawHandle, create_shared_memory, attach_shared_memory};
+}
 
 
