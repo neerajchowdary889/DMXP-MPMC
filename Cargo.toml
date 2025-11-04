@@ -13,6 +13,8 @@ crossbeam-utils = "0.8"
 
 [dev-dependencies]
 memoffset = "0.9"
+dhat = "0.3"
+memory-stats = "1.0"
 
 [lib]
 name = "dmxp_kvcache"

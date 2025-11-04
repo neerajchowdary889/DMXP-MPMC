@@ -1,3 +1,5 @@
+// Module naming follows project convention (MPMC = Multi-Producer Multi-Consumer)
+#[allow(non_snake_case)]
 pub mod MPMC {
     pub mod Buffer {
         pub mod Buffer;

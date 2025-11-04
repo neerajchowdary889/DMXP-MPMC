@@ -1,0 +1,18 @@
+{
+"dhatFileVersion": 2,
+"mode": "rust-heap",
+"verb": "Allocated",
+"bklt": true,
+"bkacc": false,
+"tu": "µs",
+"Mtu": "s",
+"tuth": 10,
+"cmd": "D:\\CodeSection\\DMXP-KVCache\\target\\debug\\deps\\allocation_test-c4d322347fd6f575.exe track_allocations_with_dhat --nocapture",
+"pid": 28564,
+"tg": 0,
+"te": 272,
+"pps": [],
+"ftbl": [
+"[root]"
+]
+}
