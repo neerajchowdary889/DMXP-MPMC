@@ -8,36 +8,34 @@
 
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
 
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[test]
 fn track_allocations_with_dhat() {
-    let _dhat = dhat::Profiler::new_heap();
+    let _profiler = dhat::Profiler::new_heap();
     
     // Allocate after profiler starts - this should be tracked
+    // Rest of your test code...
     let capacity = 1024;
     let backing = vec![0u8; capacity * RingBuffer::slot_stride()];
-    println!("Allocated backing buffer: {} bytes", backing.len());
-    
-    // Keep it alive by using it
     let ptr = backing.as_ptr() as *mut u8;
     let rb = RingBuffer::new(ptr, capacity);
     unsafe { rb.init_slots(); }
     
-    // Do some operations - these should NOT allocate (zero-allocation hot path)
-    for i in 0..100 {
-        rb.enqueue(i);
+    // Test enqueue/dequeue operations
+    for i in 0..1000 {
+        while rb.enqueue(i).is_none() {
+            std::hint::spin_loop();
+        }
+        while rb.dequeue().is_none() {
+            std::hint::spin_loop();
+        }
     }
     
-    // Allocate something that stays alive until profiler drops
-    let _test_vec = vec![0u8; 2048];
-    let _another_vec: Vec<u32> = (0..1000).collect();
+    println!("After 1000 enqueue/dequeue pairs, check dhat output for allocations");
     
-    // Keep references alive - dhat tracks until profiler is dropped
-    std::mem::drop(backing); // Explicitly drop to see if it shows up
-    // _test_vec and _another_vec will be dropped when profiler drops
-    
-    // dhat will print allocation stats when dropped
-    // Note: If still showing 0, it might be because Vec uses jemalloc/other allocator
-    // that dhat doesn't intercept, or allocations are optimized away
+    // The _dhat handle will be dropped here, which will stop the profiler
 }
 
 #[test]
@@ -66,6 +64,7 @@ fn track_allocations_with_memory_stats() {
 }
 
 #[test]
+#[serial_test::serial]
 fn verify_zero_allocation_enqueue_dequeue() {
     let _dhat = dhat::Profiler::new_heap();
     

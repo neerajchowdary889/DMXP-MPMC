@@ -2,10 +2,12 @@
 // Uses memfd_create + mmap for efficient shared memory
 
 use std::io;
+use std::ptr;
 use std::ptr::NonNull;
+use std::fmt::Debug;
 
 /// Shared memory backend trait for cross-platform memory mapping
-pub trait SharedMemoryBackend: Send + Sync {
+pub trait SharedMemoryBackend: Send + Sync + Debug {
     /// Get a pointer to the mapped memory region
     fn as_ptr(&self) -> *mut u8;
     
@@ -75,6 +77,7 @@ use std::ffi::CString;
 use std::os::unix::io::RawFd;
 
 #[cfg(target_os = "linux")]
+#[derive(Debug)]
 pub struct LinuxSharedMemory {
     ptr: NonNull<u8>,
     size: usize,
