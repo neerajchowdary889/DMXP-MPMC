@@ -4,7 +4,8 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-
+use std::path::Path;
+use std::fs;
 use dmxp_kvcache::Core::alloc::SharedMemoryAllocator;
 
 // Test helper to ensure we're the only test using shared memory
@@ -95,13 +96,16 @@ fn test_concurrent_access() -> io::Result<()> {
     Ok(())
 }
 
+
 fn cleanup_shared_memory() {
-    // On Linux, we could remove the shared memory file
+    // Clean up any existing shared memory files
     #[cfg(target_os = "linux")]
     {
-        use std::fs;
-        let _ = fs::remove_file("/dev/shm/dmxp_alloc");
+        let paths = ["/dev/shm/dmxp_alloc", "/tmp/dmxp_alloc"];
+        for path in &paths {
+            if Path::new(path).exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
-    
-    // On Windows, the OS will clean up when the last handle is closed
 }

@@ -10,7 +10,7 @@ pub const MAX_CHANNELS: usize = 256;
 /// This struct contains the atomic cursors and layout information necessary
 /// to manage one channel's ring buffer. By centralizing these here, we keep
 /// the control plane separate from the data plane and optimize memory layout.
-#[repr(C)]
+#[repr(C, align(128))]
 pub struct ChannelEntry {
     /// The byte offset from the start of the shared memory region to the
     /// beginning of this channel's data band (its ring buffer).
@@ -35,7 +35,7 @@ pub struct ChannelEntry {
 ///
 /// It acts as the entry point for any process, containing versioning info
 /// and the table of channel entries.
-#[repr(C)]
+#[repr(C, align(128))]
 pub struct GlobalHeader {
     /// A "magic number" to identify the memory region as a DMXP-KVCache buffer.
     pub magic: u64,

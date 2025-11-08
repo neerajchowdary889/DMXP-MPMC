@@ -5,6 +5,9 @@ use crate::MPMC::Buffer::layout::{GlobalHeader, ChannelEntry, MAX_CHANNELS};
 use crate::MPMC::Buffer::RingBuffer;
 use crate::Core::SharedMemory::{SharedMemoryBackend, RawHandle};
 
+// Use parking_lot's Mutex for better performance
+use parking_lot::Mutex;
+
 const MAGIC_NUMBER: u64 = 0x444D58505F4D454D; // "DMXP_MEM"
 
 /// Represents a single channel's memory region
@@ -18,30 +21,53 @@ pub struct SharedMemoryAllocator {
     shm: Box<dyn SharedMemoryBackend>,
     header: *mut GlobalHeader,
     next_channel_id: AtomicU64,
+    allocation_mutex: Mutex<()>, // For thread-safe channel creation
 }
 
 impl SharedMemoryAllocator {
-    /// Create a new shared memory allocator with the specified total size
+
+    // Create a new shared memory allocator with the specified total size
     pub fn new(size: usize) -> io::Result<Self> {
-        // Calculate total size needed
+        // Ensure the shared memory size is a multiple of the cache line size
+        let aligned_size = (size + 127) & !127;  // Align to 128 bytes
         let control_size = std::mem::size_of::<GlobalHeader>();
-        let data_size = size.saturating_sub(control_size);
+        
+        // Ensure there's enough space after the header
+        if aligned_size < control_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Size too small to fit header",
+            ));
+        }
+        let data_size = aligned_size - control_size;
         
         // Create shared memory
-        let shm = crate::Core::SharedMemory::create_shared_memory(size, Some("dmxp_alloc"))?;
+        let shm = crate::Core::SharedMemory::create_shared_memory(aligned_size, Some("dmxp_alloc"))?;
         
+        // Get a properly aligned pointer to the header
+        let header_ptr = shm.as_ptr() as *mut GlobalHeader;
+        if (header_ptr as usize) % 128 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Shared memory not properly aligned",
+            ));
+        }
+
         // Initialize global header
-        let header = shm.as_ptr() as *mut GlobalHeader;
         unsafe {
-            (*header).magic = MAGIC_NUMBER;
-            (*header).version = 1;
-            (*header).channel_count = 0;
+            std::ptr::write(header_ptr, GlobalHeader {
+                magic: MAGIC_NUMBER,
+                version: 1,
+                channel_count: 0,
+                channels: std::mem::zeroed(),
+            });
         }
         
         Ok(Self {
             shm,
-            header,
+            header: header_ptr,
             next_channel_id: AtomicU64::new(0),
+            allocation_mutex: Mutex::new(()),
         })
     }
     
@@ -53,6 +79,14 @@ impl SharedMemoryAllocator {
         let shm = crate::Core::SharedMemory::attach_shared_memory("dmxp_alloc", size)?;
         let header = shm.as_ptr() as *mut GlobalHeader;
         
+        // Verify alignment
+        if (header as usize) % 128 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Shared memory not properly aligned",
+            ));
+        }
+
         // Verify magic number
         unsafe {
             if (*header).magic != MAGIC_NUMBER {
@@ -63,50 +97,117 @@ impl SharedMemoryAllocator {
             }
         }
         
+        // Find the next available channel ID
+        let next_id = unsafe {
+            let header = &*header;
+            (0..MAX_CHANNELS)
+                .filter(|&i| header.channels[i].capacity > 0)
+                .max()
+                .map(|max| max + 1)
+                .unwrap_or(0) as u64
+        };
+
         Ok(Self {
             shm,
             header,
-            next_channel_id: AtomicU64::new(0), // Will be updated from header
+            next_channel_id: AtomicU64::new(next_id),
+            allocation_mutex: Mutex::new(()),
         })
     }
     
-    /// Create a new channel with the specified capacity
+    // Create a new channel with the specified capacity
     pub fn create_channel(&self, capacity: usize) -> io::Result<ChannelPartition> {
-        // Calculate required size
-        let slot_size = RingBuffer::slot_stride();
-        let channel_size = capacity * slot_size;
-        
-        // Find free channel slot
-        let channel_id = self.next_channel_id.fetch_add(1, Ordering::SeqCst) as u32;
-        if channel_id >= MAX_CHANNELS as u32 {
+        // Validate capacity is a power of two and non-zero
+        if capacity == 0 || (capacity & (capacity - 1)) != 0 {
             return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                "Maximum number of channels reached",
+                io::ErrorKind::InvalidInput,
+                "Capacity must be a power of two and greater than zero",
             ));
         }
+
+        let slot_size = RingBuffer::slot_stride();
+        let channel_size = (capacity * slot_size + 127) & !127; // Align to 128 bytes
+
+        // Get next available channel ID
+        let channel_id = loop {
+            let current_id = self.next_channel_id.load(Ordering::Acquire);
+            if current_id >= MAX_CHANNELS as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "Maximum number of channels reached",
+                ));
+            }
+            
+            // Try to claim this ID
+            if self.next_channel_id.compare_exchange_weak(
+                current_id,
+                current_id + 1,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ).is_ok() {
+                break current_id as u32;
+            }
+        };
+
+        // Use a mutex to prevent multiple threads from allocating overlapping memory
+        let _guard = self.allocation_mutex.lock();
         
         // Get channel entry
         let channel = unsafe { &mut (*self.header).channels[channel_id as usize] };
         
+        // Check if channel is already in use
+        if channel.capacity != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Channel ID already in use",
+            ));
+        }
+
+        // Calculate offset for this channel's data
+        let control_size = std::mem::size_of::<GlobalHeader>();
+        let mut offset = control_size;
+        
+        // Find the end of the last channel's data
+        unsafe {
+            for i in 0..(*self.header).channel_count as usize {
+                let ch = &(*self.header).channels[i];
+                let ch_end = ch.offset as usize + ch.capacity as usize * slot_size;
+                offset = offset.max(ch_end);
+            }
+        }
+        
+        // Align the offset
+        offset = (offset + 127) & !127;
+        
+        // Check if we have enough space
+        if offset + channel_size > self.shm.size() {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "Not enough space in shared memory",
+            ));
+        }
+
         // Initialize channel metadata
-        channel.offset = 0; // Will be set by allocate_region
+        channel.offset = offset as u64;
         channel.capacity = capacity as u64;
         channel.mask = (capacity - 1) as u64;
         channel.tail = CachePadded::new(AtomicU64::new(0));
         channel.head = CachePadded::new(AtomicU64::new(0));
-        
-        // Allocate memory for the channel
-        let buffer_ptr = unsafe { self.shm.as_ptr().add(channel.offset as usize) };
-        
+
         // Initialize ring buffer
-        let ring_buffer = RingBuffer::new(buffer_ptr, capacity);
-        unsafe { ring_buffer.init_slots(); }
+        let buffer_ptr = unsafe { self.shm.as_ptr().add(offset) };
+        let mut ring_buffer = RingBuffer::new(buffer_ptr, capacity);
         
+        // Initialize slots
+        unsafe {
+            ring_buffer.init_slots();
+        }
+
         // Update channel count
         unsafe {
             (*self.header).channel_count += 1;
         }
-        
+
         Ok(ChannelPartition {
             buffer: ring_buffer,
             channel_id,
@@ -132,6 +233,50 @@ impl SharedMemoryAllocator {
             channel_id,
         })
     }
+
+    pub fn used_memory(&self) -> usize {
+        let control_size = std::mem::size_of::<GlobalHeader>();
+        let mut max_offset = control_size;
+        
+        unsafe {
+            for i in 0..(*self.header).channel_count as usize {
+                let ch = &(*self.header).channels[i];
+                let ch_end = ch.offset as usize + ch.capacity as usize * RingBuffer::slot_stride();
+                max_offset = max_offset.max(ch_end);
+            }
+        }
+        
+        max_offset
+    }
+
+    pub fn available_memory(&self) -> usize {
+        self.shm.size().saturating_sub(self.used_memory())
+    }
+
+    // function to remove a channel
+    pub fn remove_channel(&self, channel_id: u32) -> io::Result<()> {
+        if channel_id >= MAX_CHANNELS as u32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Channel ID out of bounds",
+            ));
+        }
+        
+        let channel = unsafe { &mut (*self.header).channels[channel_id as usize] };
+        if channel.capacity == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Channel not initialized",
+            ));
+        }
+        
+        // Set capacity to 0 to mark the channel as free
+        channel.capacity = 0;
+        
+        Ok(())
+    }
+
+    
 }
 
 impl ChannelPartition {
