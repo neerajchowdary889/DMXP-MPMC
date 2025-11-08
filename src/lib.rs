@@ -16,6 +16,7 @@ pub mod MPMC {
 pub mod Core {
     pub mod SharedMemory;
     pub use SharedMemory::{SharedMemoryBackend, RawHandle, create_shared_memory, attach_shared_memory};
+    pub mod alloc;
 }
 
 
