@@ -5,9 +5,9 @@ use std::io;
 use std::ptr;
 use std::ptr::NonNull;
 use std::fmt::Debug;
-// #[cfg(unix)]
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
-// #[cfg(unix)]
+#[cfg(unix)]
 use std::os::fd::IntoRawFd;
 
 /// Shared memory backend trait for cross-platform memory mapping
@@ -37,7 +37,7 @@ pub enum RawHandle {
 /// 
 /// # Returns
 /// A boxed trait object implementing SharedMemoryBackend
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 pub fn create_shared_memory(size: usize, name: Option<&str>) -> io::Result<Box<dyn SharedMemoryBackend>> {
     Ok(Box::new(LinuxSharedMemory::create(size, name)?))
 }
@@ -52,7 +52,7 @@ pub fn create_shared_memory(size: usize, name: Option<&str>) -> io::Result<Box<d
 /// 
 /// # Returns
 /// A boxed trait object implementing SharedMemoryBackend
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 pub fn attach_shared_memory(name: &str, size: usize) -> io::Result<Box<dyn SharedMemoryBackend>> {
     // LinuxSharedMemory::attach(name, size).map(|shm| Box::new(shm) as Box<dyn SharedMemoryBackend>)
             // First try to open the file in /dev/shm
@@ -104,7 +104,7 @@ pub fn attach_shared_memory(name: &str, size: usize) -> io::Result<Box<dyn Share
         LinuxSharedMemory::attach(name, size).map(|shm| Box::new(shm) as Box<dyn SharedMemoryBackend>)
 }
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 impl LinuxSharedMemory {
     pub fn attach(name: &str, _size: usize) -> io::Result<Self> {
         // Try to open an existing memfd
@@ -176,14 +176,14 @@ pub fn attach_shared_memory(_name: &str, _size: usize) -> io::Result<Box<dyn Sha
     ))
 }
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 use libc::{c_void, syscall, SYS_memfd_create};
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 use std::ffi::CString;
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct LinuxSharedMemory {
     ptr: NonNull<u8>,
@@ -192,12 +192,12 @@ pub struct LinuxSharedMemory {
     original_ptr: Option<(*mut u8, usize)>,
 }
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 unsafe impl Send for LinuxSharedMemory {}
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 unsafe impl Sync for LinuxSharedMemory {}
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 impl LinuxSharedMemory {
     /// Create a new shared memory region using memfd_create
     pub fn create(size: usize, name: Option<&str>) -> io::Result<Self> {
@@ -254,7 +254,7 @@ impl LinuxSharedMemory {
     }
 }
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 impl Drop for LinuxSharedMemory {
     fn drop(&mut self) {
         unsafe {
@@ -269,7 +269,7 @@ impl Drop for LinuxSharedMemory {
     }
 }
 
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 impl SharedMemoryBackend for LinuxSharedMemory {
     fn as_ptr(&self) -> *mut u8 {
         self.ptr.as_ptr()
