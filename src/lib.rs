@@ -12,6 +12,12 @@ pub mod MPMC {
         pub use Buffer_Structs::MessageMeta; // re-export for stable path
     }
 }
+// Debug implementations for various types
+pub mod Debug {
+    pub mod StructDebug;
+}
+
+
 #[allow(non_snake_case)]
 pub mod Core {
     pub mod SharedMemory;

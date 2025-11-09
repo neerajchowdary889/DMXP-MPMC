@@ -1,3 +1,43 @@
+//! # Shared Memory Module
+//!
+//! This module provides a cross-platform abstraction for shared memory using memory-mapped files.
+//! It's designed for high-performance inter-process communication (IPC) with the following features:
+//!
+//! ## Key Features
+//! - **Cross-platform** support (Linux-specific implementation currently)
+//! - **Memory-mapped files** for efficient data sharing
+//! - **Thread-safe** operations
+//! - **Automatic cleanup** of resources using RAII
+//!
+//! ## Core Components
+//! - `SharedMemoryBackend`: Trait defining the shared memory interface
+//! - `LinuxSharedMemory`: Linux-specific implementation using `memfd_create` and `mmap`
+//! - `RawHandle`: Platform-specific handle type (file descriptor on Unix)
+//!
+//! ## Usage Example
+//! ```rust
+//! use dmxp_kvcache::Core::SharedMemory::{create_shared_memory, attach_shared_memory};
+//!
+//! // Create shared memory
+//! let shm = create_shared_memory(4096, Some("my_shared_mem"))?;
+//! 
+//! // In another process or thread:
+//! let shm2 = attach_shared_memory("my_shared_mem", 4096)?;
+//! ```
+//!
+//! ## Memory Layout
+//! - Memory is aligned to 128-byte boundaries for optimal performance
+//! - Automatically handles alignment and padding
+//! - Supports both file-backed and anonymous shared memory
+//!
+//! ## Safety
+//! - All unsafe operations are properly encapsulated
+//! - Implements `Send` and `Sync` where thread-safety is guaranteed
+//! - Automatic resource cleanup on drop
+
+#![warn(missing_docs)]
+#![allow(dead_code)]
+
 // Shared memory backend abstraction for Linux
 // Uses memfd_create + mmap for efficient shared memory
 
@@ -12,15 +52,37 @@ use std::os::fd::IntoRawFd;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 
-/// Shared memory backend trait for cross-platform memory mapping
+/// Defines the interface for shared memory backends across different platforms.
+/// 
+/// This trait provides the essential operations needed for shared memory:
+/// - Getting a raw pointer to the shared memory region
+/// - Querying the size of the shared memory
+/// - Accessing the underlying platform-specific handle
+/// 
+/// # Safety
+/// Implementations must ensure that:
+/// - The memory region remains valid for the lifetime of the object
+/// - All operations are thread-safe
+/// - The underlying resources are properly cleaned up when dropped
 pub trait SharedMemoryBackend: Send + Sync + Debug {
-    /// Get a pointer to the mapped memory region
+    /// Returns a raw pointer to the start of the shared memory region.
+    /// 
+    /// # Safety
+    /// The caller must ensure that:
+    /// - The pointer is not used after the SharedMemoryBackend is dropped
+    /// - No two threads modify the same memory location without synchronization
     fn as_ptr(&self) -> *mut u8;
     
-    /// Get the size of the mapped region in bytes
+    /// Returns the size of the shared memory region in bytes.
+    /// 
+    /// This size reflects the usable portion of the shared memory and may be
+    /// smaller than the actual mapped region due to alignment requirements.
     fn size(&self) -> usize;
     
-    /// Get the underlying file descriptor
+    /// Returns a platform-specific handle to the shared memory.
+    /// 
+    /// On Unix-like systems, this returns a file descriptor.
+    /// The caller is responsible for ensuring the handle is properly closed.
     fn raw_handle(&self) -> RawHandle;
 }
 
@@ -31,29 +93,68 @@ pub enum RawHandle {
     Fd(i32),
 }
 
-/// Create a new shared memory region with the specified size
+/// Creates a new shared memory region with the specified size.
+/// 
+/// This function allocates a new shared memory region that can be accessed by multiple processes.
+/// On Linux, it uses `memfd_create` for anonymous shared memory.
 /// 
 /// # Arguments
-/// * `size` - Size of the shared memory region in bytes
-/// * `name` - Optional name for the shared memory region (for cross-process access)
+/// * `size` - Size of the shared memory region in bytes. Will be rounded up to the nearest 128-byte boundary.
+/// * `name` - Optional name for the shared memory region (used for debugging and cross-process access)
 /// 
 /// # Returns
-/// A boxed trait object implementing SharedMemoryBackend
+/// A boxed trait object implementing `SharedMemoryBackend` that can be used to access the shared memory.
+/// 
+/// # Errors
+/// Returns an `io::Error` if:
+/// - The system is out of memory
+/// - The name contains null bytes
+/// - The underlying system call fails
+/// 
+/// # Example
+/// ```rust
+/// use dmxp_kvcache::Core::SharedMemory::create_shared_memory;
+/// 
+/// let shm = create_shared_memory(4096, Some("my_shared_mem"))?;
+/// // Use the shared memory...
+/// ```
 #[cfg(target_os = "linux")]
 pub fn create_shared_memory(size: usize, name: Option<&str>) -> io::Result<Box<dyn SharedMemoryBackend>> {
     Ok(Box::new(LinuxSharedMemory::create(size, name)?))
 }
 
-/// Attach to an existing shared memory region
-/// Note: For memfd_create, cross-process attachment requires file descriptor passing
-/// via /proc/self/fd/ or similar mechanisms. This is a simplified implementation.
+/// Attaches to an existing shared memory region.
+/// 
+/// This function attempts to attach to an existing shared memory region in this order:
+/// 1. Tries to open a file in `/dev/shm/` with the given name
+/// 2. Falls back to `memfd_create` if the file doesn't exist
 /// 
 /// # Arguments
 /// * `name` - Name of the shared memory region to attach to
-/// * `size` - Expected size of the region (for validation)
+/// * `size` - Minimum expected size of the region (for validation)
 /// 
 /// # Returns
-/// A boxed trait object implementing SharedMemoryBackend
+/// A boxed trait object implementing `SharedMemoryBackend` for the attached memory
+/// 
+/// # Errors
+/// Returns an `io::Error` if:
+/// - The shared memory region doesn't exist
+/// - The size is smaller than requested
+/// - The name contains null bytes
+/// - The underlying system calls fail
+/// 
+/// # Example
+/// ```rust
+/// use dmxp_kvcache::Core::SharedMemory::attach_shared_memory;
+/// 
+/// // In another process:
+/// let shm = attach_shared_memory("my_shared_mem", 4096)?;
+/// // Access the shared memory...
+/// ```
+/// 
+/// # Notes
+/// - On Linux, cross-process attachment typically requires file descriptor passing
+/// - The actual implementation may use different mechanisms based on the platform
 #[cfg(target_os = "linux")]
 pub fn attach_shared_memory(name: &str, size: usize) -> io::Result<Box<dyn SharedMemoryBackend>> {
     // Align the size to 128 bytes

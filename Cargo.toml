@@ -19,6 +19,7 @@ memoffset = "0.9"
 serial_test = "3.0"
 dhat = "0.3"
 memory-stats = "1.0"
+fastrand = "2.3.0"
 
 [lib]
 name = "dmxp_kvcache"

@@ -1,9 +1,11 @@
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use crossbeam_utils::CachePadded;
-use crate::MPMC::Buffer::layout::{GlobalHeader, ChannelEntry, MAX_CHANNELS};
+use crate::MPMC::Buffer::layout::{GlobalHeader, MAX_CHANNELS};
 use crate::MPMC::Buffer::RingBuffer;
-use crate::Core::SharedMemory::{SharedMemoryBackend, RawHandle};
+use crate::Core::SharedMemory::{SharedMemoryBackend};
+mod debug;
+mod getters;
 
 // Use parking_lot's Mutex for better performance
 use parking_lot::Mutex;
@@ -12,8 +14,10 @@ const MAGIC_NUMBER: u64 = 0x444D58505F4D454D; // "DMXP_MEM"
 
 /// Represents a single channel's memory region
 pub struct ChannelPartition {
-    buffer: RingBuffer,
-    channel_id: u32,
+    /// The underlying ring buffer for this channel
+    pub buffer: RingBuffer,
+    /// The unique identifier for this channel
+    pub channel_id: u32,
 }
 
 /// Global allocator for managing shared memory channels
@@ -33,17 +37,34 @@ impl SharedMemoryAllocator {
         let control_size = std::mem::size_of::<GlobalHeader>();
         
         // Ensure there's enough space after the header
+        // --- Validation: Check if size can fit the header ---
         if aligned_size < control_size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Size too small to fit header",
+                format!(
+                    "SharedMemoryAllocator::new(): size too small to fit header.\n\
+                    ├─ Requested size: {size} bytes\n\
+                    ├─ Aligned size:   {aligned_size} bytes (128-byte alignment)\n\
+                    ├─ Header size:    {control_size} bytes\n\
+                    ╰─ Expected: size >= {control_size} bytes (after alignment)"
+                ),
             ));
         }
         let data_size = aligned_size - control_size;
         
-        // Create shared memory
-        let shm = crate::Core::SharedMemory::create_shared_memory(aligned_size, Some("dmxp_alloc"))?;
-        
+
+        // --- Create shared memory ---
+        let shm = crate::Core::SharedMemory::create_shared_memory(aligned_size, Some("dmxp_alloc"))
+            .map_err(|e| io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to create shared memory:\n\
+                    ├─ Aligned size: {aligned_size}\n\
+                    ├─ Header size:  {control_size}\n\
+                    ╰─ Error: {e}"
+                ),
+            ))?;
+
         // Get a properly aligned pointer to the header
         let header_ptr = shm.as_ptr() as *mut GlobalHeader;
         if (header_ptr as usize) % 128 != 0 {
@@ -343,6 +364,7 @@ impl SharedMemoryAllocator {
     
 }
 
+
 impl ChannelPartition {
     /// Get the channel ID
     pub fn id(&self) -> u32 {
@@ -358,3 +380,4 @@ impl ChannelPartition {
 // Implement Send + Sync since we manage synchronization internally
 unsafe impl Send for SharedMemoryAllocator {}
 unsafe impl Sync for SharedMemoryAllocator {}
+
