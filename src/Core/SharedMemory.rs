@@ -9,6 +9,8 @@ use std::fmt::Debug;
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::fd::IntoRawFd;
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
 
 /// Shared memory backend trait for cross-platform memory mapping
 pub trait SharedMemoryBackend: Send + Sync + Debug {
@@ -54,59 +56,66 @@ pub fn create_shared_memory(size: usize, name: Option<&str>) -> io::Result<Box<d
 /// A boxed trait object implementing SharedMemoryBackend
 #[cfg(target_os = "linux")]
 pub fn attach_shared_memory(name: &str, size: usize) -> io::Result<Box<dyn SharedMemoryBackend>> {
-    // LinuxSharedMemory::attach(name, size).map(|shm| Box::new(shm) as Box<dyn SharedMemoryBackend>)
-            // First try to open the file in /dev/shm
-        let path = format!("/dev/shm/{}", name);
-        if let Ok(file) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-        {
-            // Memory-mapped file approach
-            let size = file.metadata()?.len() as usize;
-            // Allocate extra space to ensure we can align to 128 bytes
-            let mapping = unsafe {
-                let total_size = size + 127; // Extra space for alignment
-                let ptr = libc::mmap(
-                    std::ptr::null_mut(),
-                    total_size,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_SHARED,
-                    file.as_raw_fd(),
-                    0,
-                );
-                
-                if ptr == libc::MAP_FAILED {
-                    return Err(io::Error::last_os_error());
-                }
-                
-                // Align the pointer to 128 bytes
-                let aligned_ptr = ((ptr as usize + 127) & !127) as *mut libc::c_void;
-                
-                // Store the original pointer for munmap
-                let orig_ptr = ptr;
-                
-                // Return both the aligned pointer and the original pointer
-                (aligned_ptr as *mut u8, orig_ptr, total_size)
-            };
+    // Align the size to 128 bytes
+    let aligned_size = (size + 127) & !127;
+    
+    // Try to open the file in /dev/shm
+    let path = format!("/dev/shm/{}", name);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Failed to open shared memory at {}: {}", path, e),
+            )
+        })?;
 
-            let (aligned_ptr, orig_ptr, total_size) = mapping;
-            
-            Ok(Box::new(LinuxSharedMemory {
-                ptr: unsafe { std::ptr::NonNull::new(aligned_ptr).unwrap() },
-                size,
-                fd: file.into_raw_fd(),
-                original_ptr: Some((orig_ptr as *mut u8, total_size)),
-            }))
+    let file_size = file.metadata()?.len() as usize;
+    if file_size < aligned_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Shared memory size too small: expected at least {} bytes, got {}",
+                aligned_size, file_size
+            ),
+        ));
+    }
+
+    // Memory-mapped file approach
+    let (aligned_ptr, orig_ptr, total_size) = unsafe {
+        let total_size = file_size + 127; // Extra space for alignment
+        let ptr = libc::mmap(
+            std::ptr::null_mut(),
+            total_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        );
+        
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
         }
-
-        // Fall back to memfd if file not found
-        LinuxSharedMemory::attach(name, size).map(|shm| Box::new(shm) as Box<dyn SharedMemoryBackend>)
+        
+        // Align the pointer to 128 bytes
+        let aligned_ptr = ((ptr as usize + 127) & !127) as *mut u8;
+        
+        (aligned_ptr, ptr as *mut u8, total_size)
+    };
+    
+    Ok(Box::new(LinuxSharedMemory {
+        ptr: NonNull::new(aligned_ptr).unwrap(),
+        size: file_size,
+        fd: file.into_raw_fd(),
+        original_ptr: Some((orig_ptr, total_size)),
+    }))
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxSharedMemory {
-    pub fn attach(name: &str, _size: usize) -> io::Result<Self> {
+    pub fn attach(name: &str, expected_size: usize) -> io::Result<Self> {
         // Try to open an existing memfd
         let c_name = std::ffi::CString::new(name).unwrap();
         let fd = unsafe { libc::memfd_create(c_name.as_ptr(), 0) };
@@ -116,22 +125,32 @@ impl LinuxSharedMemory {
         }
 
         // Get the size from the existing memfd
-        let size = unsafe {
+        let actual_size = unsafe {
             let mut stat = std::mem::zeroed();
             if libc::fstat(fd, &mut stat) != 0 {
                 let err = io::Error::last_os_error();
-                unsafe { libc::close(fd) };
+                libc::close(fd);
                 return Err(err);
             }
             stat.st_size as usize
         };
 
-        // Allocate extra space to ensure we can align to 128 bytes
+        // Verify the size matches expected
+        if actual_size < expected_size {
+            unsafe { libc::close(fd) };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Shared memory too small: expected at least {}, got {}", 
+                    expected_size, actual_size),
+            ));
+        }
+
+        // Rest of the function remains the same...
         let (ptr, original_ptr) = unsafe {
-            let total_size = size + 127; // Extra space for alignment
+            // Use the actual size from the memfd
             let ptr = libc::mmap(
                 std::ptr::null_mut(),
-                total_size,
+                actual_size,  // Use actual_size instead of size
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 fd,
@@ -140,7 +159,7 @@ impl LinuxSharedMemory {
 
             if ptr == libc::MAP_FAILED {
                 let err = io::Error::last_os_error();
-                unsafe { libc::close(fd) };
+                libc::close(fd);
                 return Err(err);
             }
             
@@ -148,14 +167,14 @@ impl LinuxSharedMemory {
             let aligned_ptr = ((ptr as usize + 127) & !127) as *mut u8;
             
             // Return both the aligned pointer and the original pointer
-            (aligned_ptr, Some((ptr as *mut u8, total_size)))
+            (aligned_ptr, Some((ptr as *mut u8, actual_size)))
         };
 
         Ok(Self {
-            ptr: unsafe { std::ptr::NonNull::new(ptr).unwrap() },
-            size,
+            ptr: std::ptr::NonNull::new(ptr).unwrap(),
+            size: actual_size,  // Store actual size
             fd,
-            original_ptr: original_ptr,
+            original_ptr,
         })
     }
 }
@@ -199,26 +218,35 @@ unsafe impl Sync for LinuxSharedMemory {}
 
 #[cfg(target_os = "linux")]
 impl LinuxSharedMemory {
-    /// Create a new shared memory region using memfd_create
+    /// Create a new shared memory region using /dev/shm
     pub fn create(size: usize, name: Option<&str>) -> io::Result<Self> {
-        // Use memfd_create on Linux via syscall
-        let c_name = CString::new(name.unwrap_or("dmxp_shm")).unwrap();
-        let flags = 0u64; // MFD_CLOEXEC would be 1
+        let shm_name = name.unwrap_or("dmxp_shm");
+        let path = format!("/dev/shm/{}", shm_name);
         
-        let fd = unsafe {
-            syscall(SYS_memfd_create, c_name.as_ptr(), flags) as i32
-        };
+        // Create or truncate the file in /dev/shm
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to create shared memory file at {}: {}", path, e),
+                )
+            })?;
 
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let fd = file.as_raw_fd();
 
         // Set size
         if unsafe { libc::ftruncate(fd, size as i64) } != 0 {
-            let err = io::Error::last_os_error();
-            unsafe { libc::close(fd) };
-            return Err(err);
+            return Err(io::Error::last_os_error());
         }
+
+        // Keep the file descriptor alive
+        let fd = file.into_raw_fd();
 
         // Map memory
         let (ptr, original_ptr) = unsafe {
@@ -232,16 +260,15 @@ impl LinuxSharedMemory {
                 0,
             );
 
-            if ptr == ptr::null_mut() {
+            if ptr == libc::MAP_FAILED {
                 let err = io::Error::last_os_error();
-                unsafe { libc::close(fd) };
+                libc::close(fd);
                 return Err(err);
             }
             
             // Align the pointer to 128 bytes
             let aligned_ptr = ((ptr as usize + 127) & !127) as *mut u8;
             
-            // Return both the aligned pointer and the original pointer
             (aligned_ptr, Some((ptr as *mut u8, total_size)))
         };
 
@@ -249,7 +276,7 @@ impl LinuxSharedMemory {
             ptr: NonNull::new(ptr).unwrap(),
             size,
             fd,
-            original_ptr: original_ptr,
+            original_ptr,
         })
     }
 }

@@ -74,12 +74,33 @@ impl SharedMemoryAllocator {
     /// Attach to an existing shared memory allocator
     /// 
     /// # Arguments
-    /// * `size` - The expected size of the shared memory region (must match the size used during creation)
+    /// * [size](cci:1://file:///home/neeraj/Codes/DMXP-MPMC/src/Core/SharedMemory.rs:298:4-300:5) - The expected size of the shared memory region (must match the size used during creation)
     pub fn attach(size: usize) -> io::Result<Self> {
-        let shm = crate::Core::SharedMemory::attach_shared_memory("dmxp_alloc", size)?;
-        let header = shm.as_ptr() as *mut GlobalHeader;
+        // Align the size
+        let aligned_size = (size + 127) & !127;
         
-        // Verify alignment
+        // Calculate minimum required size for the header
+        let min_required_size = std::mem::size_of::<GlobalHeader>();
+        if aligned_size < min_required_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Size too small to fit header: need at least {} bytes", min_required_size),
+            ));
+        }
+
+        // Attach to shared memory
+        let shm = match crate::Core::SharedMemory::attach_shared_memory("dmxp_alloc", aligned_size) {
+            Ok(shm) => shm,
+            Err(e) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Failed to attach to shared memory: {}", e),
+                ));
+            }
+        };
+
+        // Get header pointer and verify alignment
+        let header = shm.as_ptr() as *mut GlobalHeader;
         if (header as usize) % 128 != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -87,13 +108,56 @@ impl SharedMemoryAllocator {
             ));
         }
 
-        // Verify magic number
+        // Verify magic number and size
         unsafe {
+            // First verify we can safely read the magic number
             if (*header).magic != MAGIC_NUMBER {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Invalid magic number",
+                    "Invalid magic number - shared memory not properly initialized",
                 ));
+            }
+
+            // Verify the shared memory is large enough for the header
+            if shm.size() < min_required_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Shared memory too small for header: need at least {} bytes, got {}",
+                        min_required_size,
+                        shm.size()
+                    ),
+                ));
+            }
+
+            // Verify size based on channels
+            let mut total_size = std::mem::size_of::<GlobalHeader>();
+            let channel_count = (*header).channel_count as usize;
+            
+            // Safety: We've already verified the header is valid and memory is large enough
+            for i in 0..channel_count {
+                if i >= MAX_CHANNELS {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Invalid channel count in header: {}", channel_count),
+                    ));
+                }
+                
+                let ch = &(*header).channels[i];
+                total_size = (total_size + 127) & !127; // Align
+                total_size = total_size.saturating_add((ch.capacity * RingBuffer::slot_stride() as u64) as usize);
+                
+                // Check for overflow
+                if total_size > shm.size() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Shared memory size too small for channels: need at least {} bytes, got {}",
+                            total_size,
+                            shm.size()
+                        ),
+                    ));
+                }
             }
         }
         

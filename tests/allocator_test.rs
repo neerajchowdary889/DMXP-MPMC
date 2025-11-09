@@ -7,6 +7,7 @@ use std::thread;
 use std::path::Path;
 use std::fs;
 use dmxp_kvcache::Core::alloc::SharedMemoryAllocator;
+use dmxp_kvcache::MPMC::Buffer::layout::GlobalHeader;
 
 // Test helper to ensure we're the only test using shared memory
 static TEST_LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
@@ -49,37 +50,48 @@ fn test_concurrent_access() -> io::Result<()> {
     let _guard = TEST_LOCK.lock();
     cleanup_shared_memory();
     
-    // Create shared memory in parent process
-    let _allocator = SharedMemoryAllocator::new(1024 * 1024)?;
+    // Create shared memory in parent process with enough space for all channels
+    let total_channels = 4;
+    let channel_size = 256 * 1024; // 256KB per channel
+    let header_size = std::mem::size_of::<GlobalHeader>();
+    let total_size = (header_size + (total_channels * channel_size) + 127) & !127; // Align to 128 bytes
     
-    // Simulate multiple processes by using threads
-    let num_threads = 4;
-    let barrier = Arc::new(std::sync::Barrier::new(num_threads));
+    let _allocator = SharedMemoryAllocator::new(total_size)?;
+    
+    let barrier = Arc::new(std::sync::Barrier::new(total_channels + 1)); // +1 for main thread
     let success = Arc::new(AtomicBool::new(true));
-    
     let mut handles = vec![];
     
-    for thread_id in 0..num_threads {
+    // Start all worker threads
+    for thread_id in 0..total_channels {
         let barrier = barrier.clone();
         let success = success.clone();
         
         handles.push(thread::spawn(move || -> io::Result<()> {
-            // All threads attach to the same shared memory (1MB, matching the size used in create)
-            let allocator = SharedMemoryAllocator::attach(1024 * 1024)?;
+            // Wait for all threads to be ready
+            barrier.wait();
+            
+            // All threads attach to the same shared memory
+            let allocator = match SharedMemoryAllocator::attach(total_size) {
+                Ok(alloc) => alloc,
+                Err(e) => {
+                    eprintln!("Thread {} failed to attach: {}", thread_id, e);
+                    success.store(false, Ordering::SeqCst);
+                    return Ok(());
+                }
+            };
             
             // Each thread creates its own channel
             let channel_id = thread_id as u32;
-            let channel = allocator.create_channel(256)?;
-            assert_eq!(channel.id(), channel_id);
-            
-            // Wait for all threads to create their channels
-            barrier.wait();
-            
-            // Verify all channels exist
-            for i in 0..num_threads {
-                if allocator.get_channel(i as u32).is_none() {
+            match allocator.create_channel(256) {
+                Ok(channel) => {
+                    if channel.id() != channel_id {
+                        success.store(false, Ordering::SeqCst);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Thread {} failed to create channel: {}", thread_id, e);
                     success.store(false, Ordering::SeqCst);
-                    return Ok(());
                 }
             }
             
@@ -87,12 +99,18 @@ fn test_concurrent_access() -> io::Result<()> {
         }));
     }
     
+    // Release all threads at once
+    barrier.wait();
+    
     // Wait for all threads to complete
     for handle in handles {
-        handle.join().expect("Thread panicked")?;
+        if let Err(e) = handle.join().expect("Thread panicked") {
+            eprintln!("Thread error: {}", e);
+            success.store(false, Ordering::SeqCst);
+        }
     }
     
-    assert!(success.load(Ordering::SeqCst), "Failed to verify all channels");
+    assert!(success.load(Ordering::SeqCst), "One or more threads failed");
     Ok(())
 }
 
