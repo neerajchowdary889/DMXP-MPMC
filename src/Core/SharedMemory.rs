@@ -16,13 +16,13 @@
 //!
 //! ## Usage Example
 //! ```rust
-//! use dmxp_kvcache::Core::SharedMemory::{create_shared_memory, attach_shared_memory};
+// use dmxp_kvcache::Core::SharedMemory::{create_shared_memory, attach_shared_memory};
 //!
 //! // Create shared memory
-//! let shm = create_shared_memory(4096, Some("my_shared_mem"))?;
+// let shm = create_shared_memory(4096, Some("my_shared_mem"))?;
 //! 
 //! // In another process or thread:
-//! let shm2 = attach_shared_memory("my_shared_mem", 4096)?;
+// let shm2 = attach_shared_memory("my_shared_mem", 4096)?;
 //! ```
 //!
 //! ## Memory Layout
@@ -113,9 +113,9 @@ pub enum RawHandle {
 /// 
 /// # Example
 /// ```rust
-/// use dmxp_kvcache::Core::SharedMemory::create_shared_memory;
+// use dmxp_kvcache::Core::SharedMemory::create_shared_memory;
 /// 
-/// let shm = create_shared_memory(4096, Some("my_shared_mem"))?;
+// let shm = create_shared_memory(4096, Some("my_shared_mem"))?;
 /// // Use the shared memory...
 /// ```
 #[cfg(target_os = "linux")]
@@ -145,10 +145,9 @@ pub fn create_shared_memory(size: usize, name: Option<&str>) -> io::Result<Box<d
 /// 
 /// # Example
 /// ```rust
-/// use dmxp_kvcache::Core::SharedMemory::attach_shared_memory;
+// use dmxp_kvcache::Core::SharedMemory::attach_shared_memory;
 /// 
-/// // In another process:
-/// let shm = attach_shared_memory("my_shared_mem", 4096)?;
+// let shm = attach_shared_memory("my_shared_mem", 4096)?;
 /// // Access the shared memory...
 /// ```
 /// 

@@ -65,12 +65,11 @@ mod linux_tests {
 
     #[test]
     fn test_attach_not_implemented() {
-        // attach_shared_memory is not yet implemented for memfd_create
         let result = attach_shared_memory("test_attach", 4096);
         assert!(result.is_err());
         
         let err = result.unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
