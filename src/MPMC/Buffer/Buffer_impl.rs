@@ -1,53 +1,86 @@
 use std::mem::size_of;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, AcqRel};
+use std::ptr;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-use super::Buffer::{RingBuffer, SlotHeader};
+use super::layout::ChannelEntry;
+use super::Buffer::{RingBuffer, Slot, MSG_INLINE};
+use crate::MPMC::Structs::Buffer_Structs::MessageMeta;
 
 impl RingBuffer {
     /// Create a ring buffer view over an existing memory region.
-    /// `capacity` must be a power of two and represents number of slots.
-    pub fn new(buffer: *mut u8, capacity: usize) -> Self {
-        assert!(capacity.is_power_of_two(), "capacity must be power of two");
+    ///
+    /// # Safety
+    /// Caller must ensure `metadata` and `buffer_base` are valid pointers to shared memory.
+    pub unsafe fn new(metadata: *const ChannelEntry, buffer_base: *mut u8) -> Self {
+        let capacity = (*metadata).capacity as usize;
         Self {
-            buffer,
+            metadata,
+            buffer_base,
             capacity,
             mask: capacity - 1,
-            tail_cursor: crossbeam_utils::CachePadded::new(std::sync::atomic::AtomicU64::new(0)),
-            head_cursor: crossbeam_utils::CachePadded::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
-    /// Size in bytes of one slot header stride in memory.
+    /// Size in bytes of one slot stride in memory.
     #[inline]
-    pub fn slot_stride() -> usize { size_of::<SlotHeader>() }
+    pub fn slot_stride() -> usize {
+        size_of::<Slot>()
+    }
 
     /// Initialize per-slot sequence numbers to k for k in 0..capacity.
-    /// Safety: caller guarantees the underlying memory is at least capacity * slot_stride bytes.
+    /// This should ONLY be called by the creator process.
+    ///
+    /// # Safety
+    /// Caller guarantees the underlying memory is allocated and writable.
     pub unsafe fn init_slots(&self) {
-        for k in 0..self.capacity { self.slot_header_mut(k).sequence.store(k as u64, Relaxed); }
+        for k in 0..self.capacity {
+            let slot = self.slot_mut(k);
+            (*slot).sequence.store(k as u64, Relaxed);
+        }
     }
 
     #[inline]
-    unsafe fn slot_header_mut(&self, index: usize) -> &mut SlotHeader {
-        let base = self.buffer.add(index * Self::slot_stride());
-        &mut *(base as *mut SlotHeader)
+    unsafe fn slot_mut(&self, index: usize) -> *mut Slot {
+        let base = self.buffer_base.add(index * Self::slot_stride());
+        base as *mut Slot
     }
 
-    /// Enqueue reserves a slot and publishes written length into the header.
-    /// Returns the index on success, or None if the ring appears full at the moment.
-    pub fn enqueue(&self, length: u64) -> Option<usize> {
+    /// Enqueue reserves a slot and publishes the message.
+    /// Returns the index on success, or None if the ring appears full.
+    pub fn enqueue(&self, meta: MessageMeta, payload: &[u8]) -> Option<usize> {
+        let meta_ptr = self.metadata;
+        // Safety: We assume metadata pointer is valid for the lifetime of the RingBuffer view
+        let tail_atomic = unsafe { &(*meta_ptr).tail };
+
         loop {
-            let tail = self.tail_cursor.load(Relaxed);
+            let tail = tail_atomic.load(Relaxed);
             let idx = (tail as usize) & self.mask;
-            let seq = unsafe { self.slot_header_mut(idx) }.sequence.load(Acquire);
+            let slot_ptr = unsafe { self.slot_mut(idx) };
+            let seq = unsafe { &(*slot_ptr).sequence }.load(Acquire);
             let dif = seq as i64 - tail as i64;
+
             if dif == 0 {
-                if self.tail_cursor.compare_exchange_weak(tail, tail + 1, AcqRel, Relaxed).is_ok() {
+                if tail_atomic
+                    .compare_exchange_weak(tail, tail + 1, AcqRel, Relaxed)
+                    .is_ok()
+                {
                     // We own this slot now
-                    let slot = unsafe { self.slot_header_mut(idx) };
-                    slot.length.store(length, Relaxed);
-                    // publish
-                    slot.sequence.store(tail + 1, Release);
+                    unsafe {
+                        // Write metadata
+                        (*slot_ptr).meta = meta;
+                        (*slot_ptr).meta.payload_len = payload.len() as u32;
+
+                        // Write payload
+                        let len = payload.len().min(MSG_INLINE);
+                        ptr::copy_nonoverlapping(
+                            payload.as_ptr(),
+                            (*slot_ptr).payload.as_mut_ptr(),
+                            len,
+                        );
+
+                        // Publish
+                        (&(*slot_ptr).sequence).store(tail + 1, Release);
+                    }
                     return Some(idx);
                 }
                 continue;
@@ -62,21 +95,41 @@ impl RingBuffer {
         }
     }
 
-    /// Dequeue acquires a ready slot and returns its index and recorded length.
-    /// Returns None if the ring appears empty at the moment.
-    pub fn dequeue(&self) -> Option<(usize, u64)> {
+    /// Dequeue acquires a ready slot and returns its content.
+    /// Returns None if the ring appears empty.
+    pub fn dequeue(&self) -> Option<(MessageMeta, Vec<u8>)> {
+        let meta_ptr = self.metadata;
+        let head_atomic = unsafe { &(*meta_ptr).head };
+
         loop {
-            let head = self.head_cursor.load(Relaxed);
+            let head = head_atomic.load(Relaxed);
             let idx = (head as usize) & self.mask;
-            let seq = unsafe { self.slot_header_mut(idx) }.sequence.load(Acquire);
+            let slot_ptr = unsafe { self.slot_mut(idx) };
+            let seq = unsafe { &(*slot_ptr).sequence }.load(Acquire);
             let dif = seq as i64 - (head as i64 + 1);
+
             if dif == 0 {
-                if self.head_cursor.compare_exchange_weak(head, head + 1, AcqRel, Relaxed).is_ok() {
-                    let slot = unsafe { self.slot_header_mut(idx) };
-                    let len = slot.length.load(Relaxed);
+                if head_atomic
+                    .compare_exchange_weak(head, head + 1, AcqRel, Relaxed)
+                    .is_ok()
+                {
+                    let (meta, payload) = unsafe {
+                        let meta = (*slot_ptr).meta;
+                        let len = meta.payload_len as usize;
+                        let mut payload = vec![0u8; len];
+                        ptr::copy_nonoverlapping(
+                            (*slot_ptr).payload.as_ptr(),
+                            payload.as_mut_ptr(),
+                            len,
+                        );
+                        (meta, payload)
+                    };
+
                     // free slot for future producers
-                    slot.sequence.store(head + self.capacity as u64, Release);
-                    return Some((idx, len));
+                    unsafe {
+                        (&(*slot_ptr).sequence).store(head + self.capacity as u64, Release);
+                    }
+                    return Some((meta, payload));
                 }
                 continue;
             } else if dif < 0 {
@@ -90,6 +143,3 @@ impl RingBuffer {
         }
     }
 }
-
-unsafe impl Send for RingBuffer {}
-unsafe impl Sync for RingBuffer {}

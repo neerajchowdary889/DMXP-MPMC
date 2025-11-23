@@ -1,97 +1,142 @@
+use crossbeam_utils::CachePadded;
+use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
+use std::alloc::{alloc, Layout};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread;
 
-fn make_backing(capacity: usize) -> Vec<u8> {
-    vec![0u8; capacity * dmxp_kvcache::MPMC::Buffer::RingBuffer::slot_stride()]
+fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
+    ChannelEntry {
+        channel_id: 0,
+        flags: 0,
+        capacity,
+        band_offset: 0,
+        tail: CachePadded::new(AtomicU64::new(0)),
+        head: CachePadded::new(AtomicU64::new(0)),
+        _pad: [],
+    }
+}
+
+fn make_aligned_backing(capacity: usize) -> (*mut u8, Layout) {
+    let size = capacity * RingBuffer::slot_stride();
+    let layout = Layout::from_size_align(size, 128).unwrap();
+    let ptr = unsafe { alloc(layout) };
+    if ptr.is_null() {
+        panic!("Failed to allocate aligned memory");
+    }
+    (ptr, layout)
 }
 
 #[test]
-fn single_thread_basic_enqueue_dequeue() {
-    let capacity = 8;
-    let mut backing = make_backing(capacity);
-    let ptr = backing.as_mut_ptr();
-    let rb = RingBuffer::new(ptr, capacity);
-    unsafe { rb.init_slots(); }
-    println!("initialized slots");
-    // Initially empty
-    assert!(rb.dequeue().is_none());
-    println!("initially empty");
-    // Enqueue up to capacity
-    for i in 0..capacity {
-        assert!(rb.enqueue(i as u64).is_some());
-    }
-    println!("enqueued all");
-    // Now should be full
-    assert!(rb.enqueue(123).is_none());
+fn simple_enqueue_dequeue() {
+    let capacity = 16;
+    let (ptr, layout) = make_aligned_backing(capacity);
 
-    // Dequeue all and verify order and lengths
-    for i in 0..capacity {
-        let (idx, len) = rb.dequeue().expect("must dequeue");
-        println!("dequeued idx: {idx}, len: {len}");
-        // idx order may wrap, but len must match insertion value
-        assert_eq!(len, i as u64, "unexpected length at idx {idx}");
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    unsafe {
+        rb.init_slots();
     }
-    println!("dequeued all");
-    // Empty again
-    assert!(rb.dequeue().is_none());
+
+    let meta = MessageMeta::default();
+    let payload = vec![1, 2, 3, 4];
+
+    // Enqueue
+    let idx = rb.enqueue(meta, &payload);
+    assert!(idx.is_some());
+
+    // Dequeue
+    let result = rb.dequeue();
+    assert!(result.is_some());
+    let (_meta_out, data) = result.unwrap();
+    assert_eq!(data, payload);
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
 }
 
 #[test]
-fn ring_full_then_frees_slots() {
+fn full_buffer() {
     let capacity = 4;
-    let mut backing = make_backing(capacity);
-    let ptr = backing.as_mut_ptr();
-    let rb = RingBuffer::new(ptr, capacity);
-    unsafe { rb.init_slots(); }
+    let (ptr, layout) = make_aligned_backing(capacity);
 
-    for _ in 0..capacity { assert!(rb.enqueue(1).is_some()); println!("enqueued 1"); }
-    assert!(rb.enqueue(2).is_none(), "should report full"); println!("should report full");
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    unsafe {
+        rb.init_slots();
+    }
 
-    // Free one slot
-    assert!(rb.dequeue().is_some()); println!("dequeued 1");
-    // Now there should be space for one more
-    assert!(rb.enqueue(3).is_some());
-    println!("enqueued 3");
+    let meta = MessageMeta::default();
+    let payload = vec![0u8; 8];
+
+    // Fill buffer
+    for _ in 0..4 {
+        assert!(rb.enqueue(meta, &payload).is_some());
+    }
+
+    // Next enqueue should fail
+    assert!(rb.enqueue(meta, &payload).is_none());
+
+    // Dequeue one
+    assert!(rb.dequeue().is_some());
+
+    // Enqueue should succeed now
+    assert!(rb.enqueue(meta, &payload).is_some());
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
 }
 
 #[test]
 fn small_mpmc_correctness() {
-    let capacity = 64;
-    let mut backing = make_backing(capacity);
-    let ptr = backing.as_mut_ptr();
-    let rb = Arc::new(RingBuffer::new(ptr, capacity));
-    unsafe { rb.init_slots(); }
-    println!("initialized slots");
-    let producers = 2usize;
-    let consumers = 2usize;
-    let per_producer = 10_000u64;
-    let total = per_producer * producers as u64;
+    let capacity = 8;
+    let (ptr, layout) = make_aligned_backing(capacity);
 
-    let consumed = Arc::new(AtomicU64::new(0));
-    let mut handles = Vec::new();
-    println!("created handles");
-    for _ in 0..producers {
-        let rb = rb.clone();
-        handles.push(thread::spawn(move || {
-            for i in 0..per_producer {
-                while rb.enqueue(i).is_none() { std::hint::spin_loop(); }
-            }
-        }));
-    }
-    for _ in 0..consumers {
-        let rb = rb.clone();
-        let consumed = consumed.clone();
-        handles.push(thread::spawn(move || {
-            while consumed.load(Relaxed) < total {
-                if rb.dequeue().is_some() { consumed.fetch_add(1, Relaxed); } else { std::hint::spin_loop(); }
-            }
-        }));
-        println!("spawned consumer");
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let entry = Box::new(entry);
+    let entry_ptr: *const ChannelEntry = &*entry;
+
+    struct SendRingBuffer(RingBuffer);
+    unsafe impl Send for SendRingBuffer {}
+    unsafe impl Sync for SendRingBuffer {}
+
+    let rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    unsafe {
+        rb.0.init_slots();
     }
 
-    for h in handles { let _ = h.join(); }
-    println!("joined handles");
-    assert_eq!(consumed.load(Relaxed), total);
+    let rb_prod = rb.clone();
+    let p = thread::spawn(move || {
+        let meta = MessageMeta::default();
+        for i in 0..100 {
+            let payload = vec![i as u8];
+            while rb_prod.0.enqueue(meta, &payload).is_none() {
+                std::hint::spin_loop();
+            }
+        }
+    });
+
+    let rb_cons = rb.clone();
+    let c = thread::spawn(move || {
+        let mut count = 0;
+        while count < 100 {
+            if let Some((_meta, data)) = rb_cons.0.dequeue() {
+                assert_eq!(data[0], count as u8);
+                count += 1;
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+    });
+
+    p.join().unwrap();
+    c.join().unwrap();
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
 }

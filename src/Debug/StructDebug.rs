@@ -1,8 +1,7 @@
-use std::fmt;
-use std::sync::atomic::Ordering;
 use crate::Core::alloc::ChannelPartition;
-use crate::MPMC::Buffer::RingBuffer;
 use crate::Core::alloc::SharedMemoryAllocator;
+use crate::MPMC::Buffer::RingBuffer;
+use std::fmt;
 
 /// Debug function for SharedMemoryAllocator
 ///
@@ -11,7 +10,10 @@ use crate::Core::alloc::SharedMemoryAllocator;
 /// - Next channel ID
 /// - Opaque reference to shared memory
 /// - Initialization status
-pub fn debug_shared_memory_allocator(allocator: &SharedMemoryAllocator, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+pub fn debug_shared_memory_allocator(
+    allocator: &SharedMemoryAllocator,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     f.debug_struct("SharedMemoryAllocator")
         .field("shm", &"<opaque>")
         .field("header", &format_args!("{:p}", allocator.header_ptr()))
@@ -25,10 +27,16 @@ pub fn debug_shared_memory_allocator(allocator: &SharedMemoryAllocator, f: &mut 
 /// Shows:
 /// - Channel ID
 /// - Underlying RingBuffer details
-pub fn debug_channel_partition(partition: &ChannelPartition, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+pub fn debug_channel_partition(
+    partition: &ChannelPartition,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     f.debug_struct("ChannelPartition")
         .field("channel_id", &partition.channel_id)
-        .field("buffer", &format_args!("RingBuffer(0x{:x})", partition.buffer.buffer as usize))
+        .field(
+            "buffer",
+            &format_args!("RingBuffer(0x{:x})", partition.buffer.buffer_base as usize),
+        )
         .finish()
 }
 
@@ -37,7 +45,11 @@ pub fn debug_channel_partition(partition: &ChannelPartition, f: &mut fmt::Format
 /// Safely displays the buffer's memory location without dereferencing
 pub fn debug_ring_buffer(buffer: &RingBuffer, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("RingBuffer")
-        .field("buffer", &format_args!("0x{:x}", buffer.buffer as usize))
+        .field(
+            "buffer_base",
+            &format_args!("0x{:x}", buffer.buffer_base as usize),
+        )
+        .field("capacity", &buffer.capacity)
         .finish_non_exhaustive()
 }
 

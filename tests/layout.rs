@@ -2,7 +2,7 @@
 // These tests assert sizes, alignments, and field offsets for
 // MessageMeta and SlotHeader. They also print the observed values
 // to aid debugging when a mismatch occurs on a given platform.
-use dmxp_kvcache::MPMC::Buffer::SlotHeader;
+// use dmxp_kvcache::MPMC::Buffer::SlotHeader; // Removed
 use dmxp_kvcache::MPMC::Structs::MessageMeta;
 use memoffset::offset_of;
 use std::mem::{align_of, size_of};
@@ -28,9 +28,9 @@ fn test_message_meta_layout() {
         "MessageMeta => size: {size}, expected: {aligned}, align: {align} (u64 align: {}), offsets: [message_id:{off_message_id}, timestamp_ns:{off_timestamp_ns}, channel_id:{off_channel_id}, message_type:{off_message_type}, sender_pid:{off_sender_pid}, sender_runtime:{off_sender_runtime}, flags:{off_flags}, payload_len:{off_payload_len}]",
         align_of::<u64>()
     );
-    
+
     // Check if the layout matches the expected values
-    assert_eq!(size, aligned); 
+    assert_eq!(size, aligned);
     assert_eq!(align, align_of::<u64>());
     assert_eq!(off_message_id, 0);
     assert_eq!(off_timestamp_ns, 8);
@@ -42,24 +42,5 @@ fn test_message_meta_layout() {
     assert_eq!(off_payload_len, 32);
 }
 
-#[test]
-fn test_slot_header_layout() {
-    // AtomicU64 has same size/alignment as u64 for FFI/ABI purposes.
-    let size = size_of::<SlotHeader>();
-    let align = align_of::<SlotHeader>();
-    let off_sequence = offset_of!(SlotHeader, sequence);
-    let off_length = offset_of!(SlotHeader, length);
-
-    println!(
-        "SlotHeader => size: {size}, expected: 16, align: {align} (u64 align: {}), offsets: [sequence:{off_sequence}, length:{off_length}]",
-        align_of::<u64>()
-    );
-
-    assert_eq!(size, 16);
-    assert_eq!(align, align_of::<u64>());
-    // Field offsets (memoffset supports atomic types)
-    assert_eq!(off_sequence, 0);
-    assert_eq!(off_length, 8);
-}
-
-
+// SlotHeader test removed as SlotHeader struct no longer exists.
+// See Buffer::Slot for the current slot layout.

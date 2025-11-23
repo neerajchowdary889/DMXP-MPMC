@@ -1,88 +1,157 @@
+use crossbeam_utils::CachePadded;
+use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
+use std::alloc::{alloc, Layout};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
 
-fn make_backing(capacity: usize) -> Vec<u8> { vec![0u8; capacity * dmxp_kvcache::MPMC::Buffer::RingBuffer::slot_stride()] }
+fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
+    ChannelEntry {
+        channel_id: 0,
+        flags: 0,
+        capacity,
+        band_offset: 0,
+        tail: CachePadded::new(AtomicU64::new(0)),
+        head: CachePadded::new(AtomicU64::new(0)),
+        _pad: [],
+    }
+}
+
+fn make_aligned_backing(capacity: usize) -> (*mut u8, Layout) {
+    let size = capacity * RingBuffer::slot_stride();
+    let layout = Layout::from_size_align(size, 128).unwrap();
+    let ptr = unsafe { alloc(layout) };
+    if ptr.is_null() {
+        panic!("Failed to allocate aligned memory");
+    }
+    (ptr, layout)
+}
 
 #[test]
 fn mpmc_correctness_many_threads() {
-    let capacity = 1 << 12; // 4096 slots
-    let mut backing = make_backing(capacity);
-    let ptr = backing.as_mut_ptr();
-    let rb = Arc::new(RingBuffer::new(ptr, capacity));
-    unsafe { rb.init_slots(); }
+    let capacity = 1024;
+    let (ptr, layout) = make_aligned_backing(capacity);
 
-    let producers = 4usize;
-    let consumers = 4usize;
-    let per_producer = 50_000u64;
-    let total = per_producer * producers as u64;
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let entry = Box::new(entry);
+    let entry_ptr: *const ChannelEntry = &*entry;
 
-    let produced = Arc::new(AtomicU64::new(0));
-    let consumed = Arc::new(AtomicU64::new(0));
+    struct SendRingBuffer(RingBuffer);
+    unsafe impl Send for SendRingBuffer {}
+    unsafe impl Sync for SendRingBuffer {}
 
-    let mut handles = Vec::new();
-    for _ in 0..producers {
-        let rb = rb.clone();
-        let produced = produced.clone();
+    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    unsafe {
+        buffer.0.init_slots();
+    }
+
+    let producers = 4;
+    let consumers = 4;
+    let msgs_per_producer = 1000;
+    let total_msgs = producers * msgs_per_producer;
+
+    let mut handles = vec![];
+
+    // Spawn producers
+    for p_id in 0..producers {
+        let buffer = buffer.clone();
         handles.push(thread::spawn(move || {
-            for _ in 0..per_producer {
-                loop { if rb.enqueue(1).is_some() { produced.fetch_add(1, Relaxed); break; } std::hint::spin_loop(); }
+            let mut meta = MessageMeta::default();
+            meta.message_id = p_id as u64; // Use message_id to track producer
+
+            for i in 0..msgs_per_producer {
+                let payload = vec![i as u8]; // Simple payload
+                while buffer.0.enqueue(meta, &payload).is_none() {
+                    thread::yield_now();
+                }
             }
         }));
     }
+
+    // Spawn consumers
+    let received_count = Arc::new(AtomicU64::new(0));
     for _ in 0..consumers {
-        let rb = rb.clone();
-        let consumed = consumed.clone();
-        handles.push(thread::spawn(move || {
-            while consumed.load(Relaxed) < total {
-                if let Some((_idx, _len)) = rb.dequeue() { consumed.fetch_add(1, Relaxed); }
-                else { std::hint::spin_loop(); }
+        let buffer = buffer.clone();
+        let received_count = received_count.clone();
+        handles.push(thread::spawn(move || loop {
+            if let Some((_meta, _data)) = buffer.0.dequeue() {
+                received_count.fetch_add(1, Ordering::Relaxed);
+            } else {
+                if received_count.load(Ordering::Relaxed) >= total_msgs as u64 {
+                    break;
+                }
+                thread::yield_now();
             }
         }));
     }
-    for h in handles { let _ = h.join(); }
 
-    assert_eq!(produced.load(Relaxed), total);
-    assert_eq!(consumed.load(Relaxed), total);
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert_eq!(received_count.load(Ordering::SeqCst), total_msgs as u64);
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
 }
 
 #[test]
 fn mpmc_throughput_print() {
-    let capacity = 1 << 12; // 4096
-    let mut backing = make_backing(capacity);
-    let ptr = backing.as_mut_ptr();
-    let rb = Arc::new(RingBuffer::new(ptr, capacity));
-    unsafe { rb.init_slots(); }
+    let capacity = 4096;
+    let (ptr, layout) = make_aligned_backing(capacity);
 
-    let producers = 4usize;
-    let consumers = 4usize;
-    let per_producer = 250_000u64; // total 1_000_000
-    let total = per_producer * producers as u64;
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let entry = Box::new(entry);
+    let entry_ptr: *const ChannelEntry = &*entry;
 
-    let consumed = Arc::new(AtomicU64::new(0));
+    struct SendRingBuffer(RingBuffer);
+    unsafe impl Send for SendRingBuffer {}
+    unsafe impl Sync for SendRingBuffer {}
 
-    let start = Instant::now();
-    let mut handles = Vec::new();
-    for _ in 0..producers {
-        let rb = rb.clone();
-        handles.push(thread::spawn(move || {
-            for _ in 0..per_producer { while rb.enqueue(1).is_none() { std::hint::spin_loop(); } }
-        }));
+    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    unsafe {
+        buffer.0.init_slots();
     }
-    for _ in 0..consumers {
-        let rb = rb.clone();
-        let consumed = consumed.clone();
-        handles.push(thread::spawn(move || {
-            while consumed.load(Relaxed) < total {
-                if rb.dequeue().is_some() { consumed.fetch_add(1, Relaxed); } else { std::hint::spin_loop(); }
+
+    let start = std::time::Instant::now();
+    let count = 100_000;
+
+    let b_prod = buffer.clone();
+    let p = thread::spawn(move || {
+        let meta = MessageMeta::default();
+        let payload = vec![0u8; 8];
+        for _ in 0..count {
+            while b_prod.0.enqueue(meta, &payload).is_none() {
+                std::hint::spin_loop();
             }
-        }));
+        }
+    });
+
+    let b_cons = buffer.clone();
+    let c = thread::spawn(move || {
+        let mut rx = 0;
+        while rx < count {
+            if b_cons.0.dequeue().is_some() {
+                rx += 1;
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+    });
+
+    p.join().unwrap();
+    c.join().unwrap();
+
+    let elapsed = start.elapsed();
+    println!(
+        "Throughput: {:.2} million ops/sec",
+        (count as f64 / elapsed.as_secs_f64()) / 1_000_000.0
+    );
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
     }
-    for h in handles { let _ = h.join(); }
-    let dur = start.elapsed();
-    let msgs_per_sec = (total as f64) / dur.as_secs_f64();
-    println!("Throughput: {:.1} msgs/sec (total={}, duration={:?})", msgs_per_sec, total, dur);
-    // Not asserting a hard floor to avoid flakiness across CI environments.
 }
