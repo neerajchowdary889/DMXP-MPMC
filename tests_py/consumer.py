@@ -13,7 +13,7 @@ from dataclasses import dataclass
 # Constants
 MAX_CHANNELS = 256
 MSG_INLINE = 960  # From Rust: 1024 - 64 (MessageMeta size)
-SLOT_SIZE = 1024  # 128-byte aligned slot
+SLOT_SIZE = 1088  # From Rust print_layout: Slot size is 1088 bytes (64-byte aligned)
 MAGIC_NUMBER = 0x444D58505F4D454D  # "DMXP_MEM" in hex
 
 # Structures matching Rust layout
@@ -133,20 +133,33 @@ class PythonConsumer:
         print(f"  Active channels: {self.header.channel_count}")
         
     def get_channel_info(self, channel_id):
-        """Get channel metadata"""
+        """Get channel metadata by reading raw bytes"""
         if channel_id >= MAX_CHANNELS:
             return None
         
-        channel = self.header.channels[channel_id]
-        if channel.capacity == 0:
+        # Calculate offset: channels start at 128, each entry is 384 bytes
+        offset = 128 + (channel_id * 384)
+        
+        # Read fields directly from memory
+        self.mm.seek(offset)
+        data = self.mm.read(384)
+        
+        ch_id = int.from_bytes(data[0:4], 'little')
+        flags = int.from_bytes(data[4:8], 'little')
+        capacity = int.from_bytes(data[8:16], 'little')
+        band_offset = int.from_bytes(data[16:24], 'little')
+        tail = int.from_bytes(data[128:136], 'little')
+        head = int.from_bytes(data[256:264], 'little')
+        
+        if capacity == 0:
             return None
         
         return {
-            'channel_id': channel.channel_id,
-            'capacity': channel.capacity,
-            'band_offset': channel.band_offset,
-            'head': channel.head.value.value,
-            'tail': channel.tail.value.value,
+            'channel_id': ch_id,
+            'capacity': capacity,
+            'band_offset': band_offset,
+            'head': head,
+            'tail': tail,
         }
     
     def list_channels(self):
@@ -158,46 +171,80 @@ class PythonConsumer:
                 channels.append(info)
         return channels
     
-    def receive(self, channel_id):
+    def receive(self, channel_id, debug=False):
         """Receive one message from a channel"""
-        channel = self.header.channels[channel_id]
-        if channel.capacity == 0:
+        info = self.get_channel_info(channel_id)
+        if not info:
+            if debug:
+                print(f"Channel {channel_id}: No channel info")
             return None
         
-        # Get current head position
-        head = channel.head.value.value
-        tail = channel.tail.value.value
+        # Get current head and tail positions
+        head = info['head']
+        tail = info['tail']
+        capacity = info['capacity']
+        band_offset = info['band_offset']
+        
+        if debug:
+            print(f"Channel {channel_id}: head={head}, tail={tail}, capacity={capacity}")
         
         # Check if buffer is empty
         if head == tail:
+            if debug:
+                print(f"Channel {channel_id}: Buffer empty (head == tail)")
             return None
         
         # Calculate slot position
-        pos = head % channel.capacity
-        slot_offset = channel.band_offset + (pos * SLOT_SIZE)
+        pos = head % capacity
+        slot_offset = band_offset + (pos * SLOT_SIZE)
+        
+        if debug:
+            print(f"Channel {channel_id}: Reading slot at offset {slot_offset} (pos={pos})")
         
         # Read slot
-        self.mm.seek(slot_offset)
-        slot_data = self.mm.read(c.sizeof(Slot))
-        slot = Slot.from_buffer_copy(slot_data)
+        try:
+            self.mm.seek(slot_offset)
+            slot_data = self.mm.read(SLOT_SIZE)
+        except Exception as e:
+            if debug:
+                print(f"Channel {channel_id}: Error reading slot: {e}")
+            return None
         
-        # Check sequence number
-        if slot.sequence.value != head:
-            return None  # Slot not ready
+        # Read sequence number (first 8 bytes)
+        sequence = int.from_bytes(slot_data[0:8], 'little')
         
-        # Extract message
-        payload_len = slot.meta.payload_len
-        payload = bytes(slot.payload[:payload_len])
+        if debug:
+            print(f"Channel {channel_id}: Slot sequence={sequence}, expected={head+1}")
+        
+        # Check sequence number (sequences start at 1, so first message has seq=1 when head=0)
+        if sequence != head + 1:
+            if debug:
+                print(f"Channel {channel_id}: Sequence mismatch")
+            return None
+        
+        # Read MessageMeta (starts at offset 8 in slot, after sequence)
+        meta_offset = 8
+        message_id = int.from_bytes(slot_data[meta_offset:meta_offset+8], 'little')
+        timestamp_ns = int.from_bytes(slot_data[meta_offset+8:meta_offset+16], 'little')
+        ch_id = int.from_bytes(slot_data[meta_offset+16:meta_offset+20], 'little')
+        payload_len = int.from_bytes(slot_data[meta_offset+32:meta_offset+36], 'little')
+        
+        # Payload starts after sequence (8) + MessageMeta (40) + padding (16) = 64 bytes
+        payload_offset = 64
+        payload = slot_data[payload_offset:payload_offset+payload_len]
         
         message = Message(
-            channel_id=slot.meta.channel_id,
-            message_id=slot.meta.message_id,
-            timestamp_ns=slot.meta.timestamp_ns,
+            channel_id=ch_id,
+            message_id=message_id,
+            timestamp_ns=timestamp_ns,
             payload=payload
         )
         
-        # Increment head (atomic operation simulation)
-        channel.head.value.value = head + 1
+        # Increment head - write back to shared memory
+        new_head = head + 1
+        head_offset = 128 + (channel_id * 384) + 256  # ChannelEntry.head offset
+        self.mm.seek(head_offset)
+        self.mm.write(new_head.to_bytes(8, 'little'))
         
         return message
     
