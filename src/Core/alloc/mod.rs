@@ -18,6 +18,8 @@ pub struct ChannelPartition {
     pub buffer: RingBuffer,
     /// The unique identifier for this channel
     pub channel_id: u32,
+    /// The capacity of the channel
+    pub capacity: usize,
 }
 
 /// Global allocator for managing shared memory channels
@@ -241,6 +243,7 @@ impl SharedMemoryAllocator {
         Ok(ChannelPartition {
             buffer: ring_buffer,
             channel_id,
+            capacity,
         })
     }
 
@@ -261,9 +264,11 @@ impl SharedMemoryAllocator {
         Some(ChannelPartition {
             buffer: ring_buffer,
             channel_id,
+            capacity: channel.capacity as usize,
         })
     }
 
+    // Get the total used memory in bytes
     pub fn used_memory(&self) -> usize {
         let control_size = std::mem::size_of::<GlobalHeader>();
         let mut max_offset = control_size;
@@ -280,6 +285,7 @@ impl SharedMemoryAllocator {
         max_offset
     }
 
+    // Get the total available memory in bytes
     pub fn available_memory(&self) -> usize {
         self.shm.size().saturating_sub(self.used_memory())
     }
@@ -298,13 +304,38 @@ impl SharedMemoryAllocator {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Channel not initialized",
-            ));
+            )); 
         }
 
         // Set capacity to 0 to mark the channel as free
         channel.capacity = 0;
 
         Ok(())
+    }
+
+    // Get all channels
+    pub fn get_channels(&self) -> Vec<ChannelPartition> {
+        let mut channels = Vec::new();
+        unsafe {
+            for i in 0..(*self.header).channel_count as usize {
+                let ch = &(*self.header).channels[i];
+                if ch.capacity != 0 {
+                    let buffer_ptr = self.shm.as_ptr().add(ch.band_offset as usize);
+                    let ring_buffer = RingBuffer::new(ch, buffer_ptr);
+                    channels.push(ChannelPartition {
+                        buffer: ring_buffer,
+                        channel_id: ch.channel_id,
+                        capacity: ch.capacity as usize,
+                    });
+                }
+            }
+        }
+        channels
+    }
+
+    // Get the number of active channels
+    pub fn channel_count(&self) -> u32 {
+        unsafe { (*self.header).channel_count }
     }
 }
 

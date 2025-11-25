@@ -228,3 +228,118 @@ fn cleanup_shared_memory() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+#[test]
+fn test_get_channels_and_count() -> io::Result<()> {
+    let _guard = TEST_LOCK.lock();
+    cleanup_shared_memory();
+
+    // Create allocator with enough space
+    let allocator = SharedMemoryAllocator::new(10 * 1024 * 1024)?; // 10MB
+
+    // Initially, no channels should exist
+    assert_eq!(allocator.channel_count(), 0);
+    assert_eq!(allocator.get_channels().len(), 0);
+
+    // Create first channel
+    let channel1 = allocator.create_channel(512)?;
+    assert_eq!(channel1.id(), 0);
+    assert_eq!(allocator.channel_count(), 1);
+
+    let channels = allocator.get_channels();
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0].id(), 0);
+
+    // Create more channels
+    let channel2 = allocator.create_channel(256)?;
+    let channel3 = allocator.create_channel(1024)?;
+
+    assert_eq!(channel2.id(), 1);
+    assert_eq!(channel3.id(), 2);
+    assert_eq!(allocator.channel_count(), 3);
+
+    // Get all channels and verify
+    let all_channels = allocator.get_channels();
+    assert_eq!(all_channels.len(), 3);
+
+    // Verify each channel ID
+    let channel_ids: Vec<u32> = all_channels.iter().map(|c| c.id()).collect();
+    assert_eq!(channel_ids, vec![0, 1, 2]);
+
+    // Create a few more channels
+    for _ in 0..5 {
+        allocator.create_channel(128)?;
+    }
+
+    assert_eq!(allocator.channel_count(), 8);
+    assert_eq!(allocator.get_channels().len(), 8);
+
+    println!("✓ All channel enumeration tests passed!");
+
+    Ok(())
+}
+
+#[test]
+fn test_memory_tracking() -> io::Result<()> {
+    let _guard = TEST_LOCK.lock();
+    cleanup_shared_memory();
+
+    let total_size = 20 * 1024 * 1024; // 20MB
+    let allocator = SharedMemoryAllocator::new(total_size)?;
+
+    // Check initial state
+    let initial_used = allocator.used_memory();
+    let initial_available = allocator.available_memory();
+
+    println!("Initial used memory: {} bytes", initial_used);
+    println!("Initial available memory: {} bytes", initial_available);
+
+    assert!(initial_used > 0, "Should have some memory used for header");
+    assert!(initial_available > 0, "Should have available memory");
+    assert_eq!(initial_used + initial_available, total_size);
+
+    // Create a channel and check memory usage
+    allocator.create_channel(1024)?;
+
+    let used_after_channel = allocator.used_memory();
+    let available_after_channel = allocator.available_memory();
+
+    println!(
+        "After creating channel - used: {}, available: {}",
+        used_after_channel, available_after_channel
+    );
+
+    assert!(
+        used_after_channel > initial_used,
+        "Used memory should increase"
+    );
+    assert!(
+        available_after_channel < initial_available,
+        "Available memory should decrease"
+    );
+    assert_eq!(used_after_channel + available_after_channel, total_size);
+
+    // Create more channels
+    for _ in 0..3 {
+        allocator.create_channel(512)?;
+    }
+
+    let final_used = allocator.used_memory();
+    let final_available = allocator.available_memory();
+
+    println!(
+        "After 4 channels - used: {}, available: {}",
+        final_used, final_available
+    );
+
+    assert!(
+        final_used > used_after_channel,
+        "Used memory should keep increasing"
+    );
+    assert_eq!(final_used + final_available, total_size);
+    assert_eq!(allocator.channel_count(), 4);
+
+    println!("✓ Memory tracking tests passed!");
+
+    Ok(())
+}
