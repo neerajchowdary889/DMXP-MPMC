@@ -1,7 +1,7 @@
 // In src/MPMC/producer.rs
 use crate::MPMC::Buffer::MSG_INLINE;
 use crate::MPMC::Structs::Buffer_Structs::MessageMeta;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,6 +14,7 @@ pub struct Producer {
     channel_id: u32,
     keep_alive: Arc<AtomicBool>,
     max_message_size: usize,
+    sequence_counter: AtomicU64,
 }
 
 impl Producer {
@@ -31,6 +32,7 @@ impl Producer {
             channel_id,
             keep_alive: Arc::new(AtomicBool::new(true)),
             max_message_size,
+            sequence_counter: AtomicU64::new(0),
         }
     }
 
@@ -66,7 +68,7 @@ impl Producer {
             .as_nanos() as u64;
 
         let meta = MessageMeta {
-            message_id: 0, // TODO: Add sequence counter if needed
+            message_id: self.sequence_counter.fetch_add(1, Ordering::Relaxed),
             timestamp_ns: now,
             channel_id: self.channel_id,
             message_type: 1, // Default type
@@ -77,7 +79,10 @@ impl Producer {
         };
 
         match buffer.enqueue(meta, message) {
-            Some(_) => Ok(()),
+            Some(_) => {
+                buffer.signal_consumer();
+                Ok(())
+            }
             None => {
                 if !self.keep_alive.load(Ordering::Acquire) {
                     return Err(std::io::Error::new(

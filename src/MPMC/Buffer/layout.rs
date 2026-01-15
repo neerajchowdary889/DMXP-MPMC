@@ -26,6 +26,10 @@ pub struct ChannelEntry {
     /// beginning of this channel's data band (its ring buffer).
     pub band_offset: u64,
 
+    /// Signal word for futex-based blocking/waking.
+    /// Producers write to this (and wake), consumers wait on this.
+    pub signal: std::sync::atomic::AtomicU32,
+
     /// The "tail" cursor for producers. Atomically incremented to claim a slot for writing.
     /// Padded to prevent false sharing with adjacent channel metadata.
     pub tail: CachePadded<AtomicU64>,

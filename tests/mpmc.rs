@@ -13,6 +13,7 @@ fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
         flags: 0,
         capacity,
         band_offset: 0,
+        signal: std::sync::atomic::AtomicU32::new(0),
         tail: CachePadded::new(AtomicU64::new(0)),
         head: CachePadded::new(AtomicU64::new(0)),
         _pad: [],

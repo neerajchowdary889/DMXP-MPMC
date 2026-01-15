@@ -266,6 +266,48 @@ class PythonConsumer:
         
         return messages
     
+    def receive_blocking(self, channel_id, timeout=None):
+        """Receive a message, blocking until one is available"""
+        # Linux futex constants
+        SYS_futex = 202
+        FUTEX_WAIT = 0
+        FUTEX_PRIVATE_FLAG = 128
+        
+        while True:
+            # Try to receive
+            msg = self.receive(channel_id)
+            if msg:
+                return msg
+            
+            # If no message, wait on signal
+            info = self.get_channel_info(channel_id)
+            if not info:
+                raise ValueError(f"Channel {channel_id} not found")
+            
+            # Signal is at offset 24 (after band_offset)
+            signal_offset = 128 + (channel_id * 384) + 24
+            
+            # Read current signal value
+            self.mm.seek(signal_offset)
+            val = int.from_bytes(self.mm.read(4), 'little')
+            
+            # Wait using futex syscall
+            # syscall(SYS_futex, addr, op, val, timeout, addr2, val3)
+            # We need the address of the signal in the mmapped region
+            # ctypes.addressof(self.mm) doesn't work directly on mmap object
+            # We need to get the buffer address.
+            
+            # For Python mmap, we can use from_buffer to get a ctypes pointer
+            # But mmap in Python doesn't expose the base address easily.
+            # Workaround: Use ctypes to cast the buffer
+            
+            buf = (c.c_char * len(self.mm)).from_buffer(self.mm)
+            base_addr = c.addressof(buf)
+            signal_addr = base_addr + signal_offset
+            
+            libc = c.CDLL(None)
+            libc.syscall(SYS_futex, signal_addr, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, val, 0, 0, 0)
+            
     def close(self):
         """Close shared memory"""
         if self.mm:

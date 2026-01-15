@@ -47,15 +47,17 @@ impl SharedMemoryAllocator {
 
         // --- Create shared memory ---
         let shm = crate::Core::SharedMemory::create_shared_memory(aligned_size, Some("dmxp_alloc"))
-            .map_err(|e| io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to create shared memory:\n\
+            .map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to create shared memory:\n\
                     ├─ Aligned size: {aligned_size}\n\
                     ├─ Header size:  {control_size}\n\
                     ╰─ Error: {e}"
-                ),
-            ))?;
+                    ),
+                )
+            })?;
 
         // Get a properly aligned pointer to the header
         let header_ptr = shm.as_ptr() as *mut GlobalHeader;
@@ -200,10 +202,12 @@ impl SharedMemoryAllocator {
 
         // Find the end of the last channel's data
         unsafe {
-            for i in 0..(*self.header).channel_count as usize {
+            for i in 0..MAX_CHANNELS {
                 let ch = &(*self.header).channels[i];
-                let ch_end = ch.band_offset as usize + ch.capacity as usize * slot_size;
-                offset = offset.max(ch_end);
+                if ch.capacity != 0 {
+                    let ch_end = ch.band_offset as usize + ch.capacity as usize * slot_size;
+                    offset = offset.max(ch_end);
+                }
             }
         }
 
@@ -223,6 +227,7 @@ impl SharedMemoryAllocator {
         channel.flags = 0;
         channel.band_offset = offset as u64;
         channel.capacity = capacity as u64;
+        channel.signal = std::sync::atomic::AtomicU32::new(0);
         channel.tail = CachePadded::new(AtomicU64::new(0));
         channel.head = CachePadded::new(AtomicU64::new(0));
 
@@ -304,7 +309,7 @@ impl SharedMemoryAllocator {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Channel not initialized",
-            )); 
+            ));
         }
 
         // Set capacity to 0 to mark the channel as free
