@@ -142,4 +142,21 @@ impl RingBuffer {
             }
         }
     }
+    /// Signal consumers that new data is available
+    pub fn signal_consumer(&self) {
+        unsafe {
+            let signal = &(*self.metadata).signal;
+            signal.fetch_add(1, Release);
+            crate::Core::futex::futex_wake(signal);
+        }
+    }
+
+    /// Wait for new data to be available
+    pub fn wait_for_data(&self) {
+        unsafe {
+            let signal = &(*self.metadata).signal;
+            let val = signal.load(Acquire);
+            crate::Core::futex::futex_wait(signal, val);
+        }
+    }
 }

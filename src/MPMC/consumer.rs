@@ -68,6 +68,29 @@ impl Consumer {
         }
     }
 
+    /// Receives a message, blocking until one is available or the producer terminates.
+    pub fn receive_blocking(&self) -> std::io::Result<Vec<u8>> {
+        let buffer = self.channel.buffer();
+        loop {
+            match buffer.dequeue() {
+                Some((_meta, payload)) => {
+                    self.update_last_message_time();
+                    return Ok(payload);
+                }
+                None => {
+                    if !self.is_producer_alive() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "Producer has terminated",
+                        ));
+                    }
+                    // Wait for signal
+                    buffer.wait_for_data();
+                }
+            }
+        }
+    }
+
     /// Checks if the producer is still alive
     fn is_producer_alive(&self) -> bool {
         // If we've received a message recently, assume the producer is still alive

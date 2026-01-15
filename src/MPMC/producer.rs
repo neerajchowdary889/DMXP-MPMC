@@ -77,7 +77,10 @@ impl Producer {
         };
 
         match buffer.enqueue(meta, message) {
-            Some(_) => Ok(()),
+            Some(_) => {
+                buffer.signal_consumer();
+                Ok(())
+            }
             None => {
                 if !self.keep_alive.load(Ordering::Acquire) {
                     return Err(std::io::Error::new(
