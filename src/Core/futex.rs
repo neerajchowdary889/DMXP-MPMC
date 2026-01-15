@@ -14,7 +14,7 @@ pub fn futex_wait(atomic: &AtomicU32, expected: u32) {
         libc::syscall(
             libc::SYS_futex,
             atomic as *const AtomicU32 as *const u32,
-            libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG,
+            libc::FUTEX_WAIT,
             expected,
             ptr::null::<libc::timespec>(),
             ptr::null::<u32>(),
@@ -29,7 +29,7 @@ pub fn futex_wake(atomic: &AtomicU32) {
         libc::syscall(
             libc::SYS_futex,
             atomic as *const AtomicU32 as *const u32,
-            libc::FUTEX_WAKE | libc::FUTEX_PRIVATE_FLAG,
+            libc::FUTEX_WAKE,
             1, // Wake 1 waiter
             std::ptr::null::<libc::timespec>(),
             std::ptr::null::<u32>(),
