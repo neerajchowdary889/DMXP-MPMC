@@ -26,3 +26,4 @@ fastrand = "2.3.0"
 [lib]
 name = "dmxp_kvcache"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
