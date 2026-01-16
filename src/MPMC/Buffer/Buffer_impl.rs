@@ -45,6 +45,93 @@ impl RingBuffer {
         base as *mut Slot
     }
 
+    /// Enqueue a batch of messages.
+    /// Returns the starting index on success, or None if the ring DOES NOT have enough contiguous space.
+    /// Note: This implementation is "all or nothing" for the batch.
+    pub fn enqueue_batch(&self, messages: &[(&MessageMeta, &[u8])]) -> Option<usize> {
+        let batch_size = messages.len();
+        if batch_size == 0 {
+            return Some(0); // Nothing to do
+        }
+        if batch_size > self.capacity {
+            return None; // Impossible to fit
+        }
+
+        let meta_ptr = self.metadata;
+        let tail_atomic = unsafe { &(*meta_ptr).tail };
+
+        loop {
+            let tail = tail_atomic.load(Relaxed);
+
+            // 1. Check if all slots in the batch range are available
+            let mut all_available = true;
+            for i in 0..batch_size {
+                let target_seq = tail + i as u64;
+                let idx = (target_seq as usize) & self.mask;
+                let slot_ptr = unsafe { self.slot_mut(idx) };
+                let seq = unsafe { &(*slot_ptr).sequence }.load(Acquire);
+
+                let dif = seq as i64 - target_seq as i64;
+                if dif < 0 {
+                    // Start of batch is full? or middle is full?
+                    // If any slot is full, we can't proceed with this batch at this tail position.
+                    all_available = false;
+                    break;
+                } else if dif > 0 {
+                    // Should theoretically not happen if we read tail correctly,
+                    // unless tail moved massively forward and we read an old tail?
+                    // Or someone else claimed it.
+                    all_available = false;
+                    break;
+                }
+            }
+
+            if !all_available {
+                // Check if it's full. If head is far behind, return None.
+                // Actually standard enqueue returns None if diff < 0.
+                // For now, if we can't claim, we return None (full) or retry.
+                // Ideally we should retry if it's just contention, but return None if truly full.
+                // To differentiate, we'd check head. But for simplicity, let's just return None and let caller decide (spin or drop).
+                // Actually, standard enqueue spins on "producer not finished" (dif > 0) but returns None on "full" (dif < 0).
+                // We will return None if any slot is not ready. Caller (Producer) usually retries.
+                return None;
+            }
+
+            // 2. Try to claim the whole batch
+            if tail_atomic
+                .compare_exchange_weak(tail, tail + batch_size as u64, AcqRel, Relaxed)
+                .is_ok()
+            {
+                // We own the range [tail, tail + batch_size)
+                for (i, (meta, payload)) in messages.iter().enumerate() {
+                    let target_seq = tail + i as u64;
+                    let idx = (target_seq as usize) & self.mask;
+                    let slot_ptr = unsafe { self.slot_mut(idx) };
+
+                    unsafe {
+                        // Write metadata
+                        (*slot_ptr).meta = **meta; // Clone meta
+                        (*slot_ptr).meta.payload_len = payload.len() as u32;
+
+                        // Write payload
+                        let len = payload.len().min(MSG_INLINE);
+                        ptr::copy_nonoverlapping(
+                            payload.as_ptr(),
+                            (*slot_ptr).payload.as_mut_ptr(),
+                            len,
+                        );
+
+                        // Publish
+                        (&(*slot_ptr).sequence).store(target_seq + 1, Release);
+                    }
+                }
+                return Some((tail as usize) & self.mask);
+            }
+            // logical contention, retry loop
+            std::hint::spin_loop();
+        }
+    }
+
     /// Enqueue reserves a slot and publishes the message.
     /// Returns the index on success, or None if the ring appears full.
     pub fn enqueue(&self, meta: MessageMeta, payload: &[u8]) -> Option<usize> {

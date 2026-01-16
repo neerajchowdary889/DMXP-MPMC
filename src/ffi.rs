@@ -119,6 +119,44 @@ pub extern "C" fn dmxp_producer_new(channel_id: u32, capacity: u32) -> *mut Prod
 }
 
 #[no_mangle]
+pub extern "C" fn dmxp_producer_send_batch(
+    handle: *mut ProducerHandle,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    count: usize,
+) -> i32 {
+    if handle.is_null() || data_ptrs.is_null() || data_lens.is_null() {
+        return DMXP_ERROR_NULL_POINTER;
+    }
+
+    let producer = unsafe { &(*handle).inner };
+
+    // Convert arrays of pointers to Vec<&[u8]>
+    // This involves a loop and slice creation, but it's much faster than individual FFI calls.
+    // We assume all pointers and lengths are valid for 'count'.
+
+    let mut messages: Vec<&[u8]> = Vec::with_capacity(count);
+
+    unsafe {
+        for i in 0..count {
+            let ptr = *data_ptrs.add(i);
+            let len = *data_lens.add(i);
+            if ptr.is_null() {
+                return DMXP_ERROR_NULL_POINTER;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            messages.push(slice);
+        }
+    }
+
+    match producer.send_batch(&messages) {
+        Ok(_) => DMXP_SUCCESS,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => DMXP_ERROR_CHANNEL_FULL,
+        Err(_) => DMXP_ERROR_INTERNAL,
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn dmxp_producer_send(
     handle: *mut ProducerHandle,
     data: *const u8,

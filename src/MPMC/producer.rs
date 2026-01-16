@@ -36,6 +36,59 @@ impl Producer {
         }
     }
 
+    /// Send a batch of messages.
+    /// Returns Ok(()) on success, or WouldBlock if the channel is full.
+    pub fn send_batch(&self, messages: &[&[u8]]) -> std::io::Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let batch_size = messages.len();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // Pre-allocate IDs (gaps on failure are acceptable for now)
+        let base_msg_id = self
+            .sequence_counter
+            .fetch_add(batch_size as u64, Ordering::Relaxed);
+
+        // Prepare metadata objects
+        let mut meta_storage: Vec<MessageMeta> = Vec::with_capacity(batch_size);
+
+        for (i, msg) in messages.iter().enumerate() {
+            meta_storage.push(MessageMeta {
+                message_id: base_msg_id + i as u64,
+                timestamp_ns: now,
+                channel_id: self.channel_id,
+                message_type: 1, // Default type
+                sender_pid: std::process::id(),
+                sender_runtime: 1, // Rust
+                flags: 0,
+                payload_len: msg.len() as u32,
+            });
+        }
+
+        // Create the slice of references required by enqueue_batch
+        let batch_args: Vec<(&MessageMeta, &[u8])> = messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| (&meta_storage[i], *msg))
+            .collect();
+
+        // Attempt enqueue
+        if self.channel.buffer().enqueue_batch(&batch_args).is_some() {
+            self.channel.buffer().signal_consumer();
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "Channel full or contended",
+            ))
+        }
+    }
+
     /// Sends a message through the channel.
     ///
     /// # Arguments
