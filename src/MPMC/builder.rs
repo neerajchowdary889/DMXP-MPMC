@@ -53,7 +53,7 @@ impl ChannelBuilder {
             }
             None => {
                 // Channel doesn't exist, create a new one
-                allocator.create_channel(self.capacity)?
+                allocator.create_channel(self.capacity, Some(self.channel_id))?
             }
         };
 

@@ -28,7 +28,7 @@ fn test_shared_memory_allocator() -> io::Result<()> {
     assert!(allocator.get_channel(0).is_none());
 
     // Test 2: Create a channel
-    let channel = allocator.create_channel(1024)?; // 1K slots
+    let channel = allocator.create_channel(1024, None)?; // 1K slots
     assert_eq!(channel.id(), 0);
 
     // Test 3: Get the channel back
@@ -37,7 +37,7 @@ fn test_shared_memory_allocator() -> io::Result<()> {
 
     // Test 4: Create multiple channels
     for i in 1..5 {
-        allocator.create_channel(512)?;
+        allocator.create_channel(512, None)?;
         let channel = allocator.get_channel(i).expect("Channel should exist");
         assert_eq!(channel.id(), i);
     }
@@ -93,7 +93,7 @@ fn test_concurrent_access() -> io::Result<()> {
             let _guard = allocator_mutex.lock();
 
             // Each thread creates a channel with a unique ID
-            match allocator.create_channel(channel_slots) {
+            match allocator.create_channel(channel_slots, None) {
                 Ok(channel) => {
                     let channel_id = channel.id();
                     tx.send((thread_id, channel_id, Ok(()))).unwrap();
@@ -242,7 +242,7 @@ fn test_get_channels_and_count() -> io::Result<()> {
     assert_eq!(allocator.get_channels().len(), 0);
 
     // Create first channel
-    let channel1 = allocator.create_channel(512)?;
+    let channel1 = allocator.create_channel(512, None)?;
     assert_eq!(channel1.id(), 0);
     assert_eq!(allocator.channel_count(), 1);
 
@@ -251,8 +251,8 @@ fn test_get_channels_and_count() -> io::Result<()> {
     assert_eq!(channels[0].id(), 0);
 
     // Create more channels
-    let channel2 = allocator.create_channel(256)?;
-    let channel3 = allocator.create_channel(1024)?;
+    let channel2 = allocator.create_channel(256, None)?;
+    let channel3 = allocator.create_channel(1024, None)?;
 
     assert_eq!(channel2.id(), 1);
     assert_eq!(channel3.id(), 2);
@@ -268,7 +268,7 @@ fn test_get_channels_and_count() -> io::Result<()> {
 
     // Create a few more channels
     for _ in 0..5 {
-        allocator.create_channel(128)?;
+        allocator.create_channel(128, None)?;
     }
 
     assert_eq!(allocator.channel_count(), 8);
@@ -299,7 +299,7 @@ fn test_memory_tracking() -> io::Result<()> {
     assert_eq!(initial_used + initial_available, total_size);
 
     // Create a channel and check memory usage
-    allocator.create_channel(1024)?;
+    allocator.create_channel(1024, None)?;
 
     let used_after_channel = allocator.used_memory();
     let available_after_channel = allocator.available_memory();
@@ -321,7 +321,7 @@ fn test_memory_tracking() -> io::Result<()> {
 
     // Create more channels
     for _ in 0..3 {
-        allocator.create_channel(512)?;
+        allocator.create_channel(512, None)?;
     }
 
     let final_used = allocator.used_memory();
