@@ -1,5 +1,6 @@
 // src/MPMC/consumer.rs
 
+use crate::MPMC::Structs::Buffer_Structs::MessageMeta;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,13 +48,18 @@ impl Consumer {
     /// * `Ok(None)` if no message is available
     /// * `Err(io::Error)` if the producer has terminated or an error occurred
     pub fn receive(&self) -> std::io::Result<Option<Vec<u8>>> {
+        self.receive_with_meta()
+            .map(|opt| opt.map(|(_, payload)| payload))
+    }
+
+    /// Receives a message and metadata from the channel if one is available.
+    pub fn receive_with_meta(&self) -> std::io::Result<Option<(MessageMeta, Vec<u8>)>> {
         let buffer = self.channel.buffer();
 
         match buffer.dequeue() {
-            Some((_meta, payload)) => {
-                // TODO: Expose metadata to the user if needed
+            Some((meta, payload)) => {
                 self.update_last_message_time();
-                Ok(Some(payload))
+                Ok(Some((meta, payload)))
             }
             None => {
                 // Check if producer is still alive
@@ -70,12 +76,18 @@ impl Consumer {
 
     /// Receives a message, blocking until one is available or the producer terminates.
     pub fn receive_blocking(&self) -> std::io::Result<Vec<u8>> {
+        self.receive_blocking_with_meta()
+            .map(|(_, payload)| payload)
+    }
+
+    /// Receives a message and metadata, blocking until one is available.
+    pub fn receive_blocking_with_meta(&self) -> std::io::Result<(MessageMeta, Vec<u8>)> {
         let buffer = self.channel.buffer();
         loop {
             match buffer.dequeue() {
-                Some((_meta, payload)) => {
+                Some((meta, payload)) => {
                     self.update_last_message_time();
-                    return Ok(payload);
+                    return Ok((meta, payload));
                 }
                 None => {
                     if !self.is_producer_alive() {
@@ -122,10 +134,19 @@ impl Consumer {
     /// * `Ok(None)` if the timeout was reached
     /// * `Err(io::Error)` if the producer has terminated or an error occurred
     pub fn receive_timeout(&self, timeout: Duration) -> std::io::Result<Option<Vec<u8>>> {
+        self.receive_timeout_with_meta(timeout)
+            .map(|opt| opt.map(|(_, payload)| payload))
+    }
+
+    /// Receives a message and metadata with timeout.
+    pub fn receive_timeout_with_meta(
+        &self,
+        timeout: Duration,
+    ) -> std::io::Result<Option<(MessageMeta, Vec<u8>)>> {
         let start = Instant::now();
 
         loop {
-            match self.receive() {
+            match self.receive_with_meta() {
                 Ok(Some(data)) => return Ok(Some(data)),
                 Ok(None) => {
                     if start.elapsed() >= timeout {

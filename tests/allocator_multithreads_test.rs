@@ -55,8 +55,8 @@ fn test_channel_management() -> io::Result<()> {
     let allocator = SharedMemoryAllocator::new(1024 * 1024 * 10)?; // 10MB
 
     // Test creating specific channels
-    let student_channel = allocator.create_channel(256)?;
-    let teacher_channel = allocator.create_channel(256)?;
+    let student_channel = allocator.create_channel(256, None)?;
+    let teacher_channel = allocator.create_channel(256, None)?;
 
     // Verify channels have distinct IDs
     assert_ne!(student_channel.id(), teacher_channel.id());
@@ -153,7 +153,7 @@ fn test_concurrent_channel_operations() -> io::Result<()> {
                     // Randomly choose between creating and removing channels
                     if fastrand::bool() {
                         // Create channel operation
-                        match allocator.create_channel(1024) {
+                        match allocator.create_channel(1024, None) {
                             Ok(channel) => {
                                 let id = channel.id();
                                 counter.fetch_add(1, Ordering::SeqCst);
@@ -296,7 +296,7 @@ fn test_memory_management() -> io::Result<()> {
         "Creating first channel (requested: {} slots)",
         channel1_slots
     );
-    let channel1 = allocator.create_channel(channel1_slots)?;
+    let channel1 = allocator.create_channel(channel1_slots, None)?;
     println!("Created channel with ID: {}", channel1.id());
 
     // Second channel should also fit
@@ -304,7 +304,7 @@ fn test_memory_management() -> io::Result<()> {
         "Creating second channel (requested: {} slots)",
         channel2_slots
     );
-    let channel2 = allocator.create_channel(channel2_slots)?;
+    let channel2 = allocator.create_channel(channel2_slots, None)?;
     println!("Created channel with ID: {}", channel2.id());
 
     // Third channel might fail if we sized it tight enough
@@ -314,7 +314,7 @@ fn test_memory_management() -> io::Result<()> {
         "Attempting to create huge channel (requested: {} slots) - should fail",
         huge_channel_slots
     );
-    let result = allocator.create_channel(huge_channel_slots);
+    let result = allocator.create_channel(huge_channel_slots, None);
     assert!(
         result.is_err(),
         "Expected error when creating huge channel, but got: {:?}",
@@ -334,7 +334,7 @@ fn test_memory_management() -> io::Result<()> {
         "Creating new channel after removal (requested: {} slots)",
         channel2_slots
     );
-    let channel3 = allocator.create_channel(channel2_slots)?;
+    let channel3 = allocator.create_channel(channel2_slots, None)?;
     println!("Created channel with ID: {}", channel3.id());
 
     Ok(())
@@ -349,7 +349,7 @@ fn test_persistence() -> io::Result<()> {
     // Create and populate shared memory
     {
         let allocator = SharedMemoryAllocator::new(1024 * 1024 * 10)?; // 10MB
-        let channel = allocator.create_channel(256)?;
+        let channel = allocator.create_channel(256, None)?;
         // Simulate some data being written
         let _ = channel; // Use channel to prevent warning
     }
@@ -359,7 +359,7 @@ fn test_persistence() -> io::Result<()> {
     assert!(allocator.get_channel(0).is_some());
 
     // Create another channel
-    let channel = allocator.create_channel(256)?;
+    let channel = allocator.create_channel(256, None)?;
     assert_eq!(channel.id(), 1);
 
     Ok(())
@@ -375,21 +375,21 @@ fn test_error_conditions() -> io::Result<()> {
     let allocator = SharedMemoryAllocator::new(64 * 1024 * 1024)?;
 
     // Test invalid channel capacity (not power of two)
-    assert!(allocator.create_channel(100).is_err());
+    assert!(allocator.create_channel(100, None).is_err());
 
     // Test zero capacity
-    assert!(allocator.create_channel(0).is_err());
+    assert!(allocator.create_channel(0, None).is_err());
 
     // Test maximum channels
     // MAX_CHANNELS is 256.
     for i in 0..256 {
-        if let Err(e) = allocator.create_channel(16) {
+        if let Err(e) = allocator.create_channel(16, None) {
             panic!("Failed to create channel {}: {}", i, e);
         }
     }
 
     // Next channel should fail (channel limit reached)
-    assert!(allocator.create_channel(16).is_err());
+    assert!(allocator.create_channel(16, None).is_err());
 
     // Test removing non-existent channel
     assert!(allocator.remove_channel(999).is_err());

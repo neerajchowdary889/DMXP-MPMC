@@ -145,7 +145,11 @@ impl SharedMemoryAllocator {
     }
 
     // Create a new channel with the specified capacity
-    pub fn create_channel(&self, capacity: usize) -> io::Result<ChannelPartition> {
+    pub fn create_channel(
+        &self,
+        capacity: usize,
+        requested_id: Option<u32>,
+    ) -> io::Result<ChannelPartition> {
         // Validate capacity is a power of two and non-zero
         if capacity == 0 || (capacity & (capacity - 1)) != 0 {
             return Err(io::Error::new(
@@ -158,27 +162,40 @@ impl SharedMemoryAllocator {
         let channel_size = (capacity * slot_size + 127) & !127; // Align to 128 bytes
 
         // Get next available channel ID
-        let channel_id = loop {
-            let current_id = self.next_channel_id.load(Ordering::Acquire);
-            if current_id >= MAX_CHANNELS as u64 {
+        let channel_id = if let Some(id) = requested_id {
+            if id >= MAX_CHANNELS as u32 {
                 return Err(io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    "Maximum number of channels reached",
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Requested channel ID {} exceeds maximum {}",
+                        id, MAX_CHANNELS
+                    ),
                 ));
             }
+            id
+        } else {
+            loop {
+                let current_id = self.next_channel_id.load(Ordering::Acquire);
+                if current_id >= MAX_CHANNELS as u64 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::OutOfMemory,
+                        "Maximum number of channels reached",
+                    ));
+                }
 
-            // Try to claim this ID
-            if self
-                .next_channel_id
-                .compare_exchange_weak(
-                    current_id,
-                    current_id + 1,
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                break current_id as u32;
+                // Try to claim this ID
+                if self
+                    .next_channel_id
+                    .compare_exchange_weak(
+                        current_id,
+                        current_id + 1,
+                        Ordering::SeqCst,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    break current_id as u32;
+                }
             }
         };
 
@@ -279,7 +296,7 @@ impl SharedMemoryAllocator {
         let mut max_offset = control_size;
 
         unsafe {
-            for i in 0..(*self.header).channel_count as usize {
+            for i in 0..MAX_CHANNELS as usize {
                 let ch = &(*self.header).channels[i];
                 let ch_end =
                     ch.band_offset as usize + ch.capacity as usize * RingBuffer::slot_stride();
@@ -318,11 +335,10 @@ impl SharedMemoryAllocator {
         Ok(())
     }
 
-    // Get all channels
     pub fn get_channels(&self) -> Vec<ChannelPartition> {
         let mut channels = Vec::new();
         unsafe {
-            for i in 0..(*self.header).channel_count as usize {
+            for i in 0..MAX_CHANNELS as usize {
                 let ch = &(*self.header).channels[i];
                 if ch.capacity != 0 {
                     let buffer_ptr = self.shm.as_ptr().add(ch.band_offset as usize);
