@@ -58,6 +58,7 @@ impl Producer {
         let mut meta_storage: Vec<MessageMeta> = Vec::with_capacity(batch_size);
 
         for (i, msg) in messages.iter().enumerate() {
+
             meta_storage.push(MessageMeta {
                 message_id: base_msg_id + i as u64,
                 timestamp_ns: now,
@@ -65,6 +66,7 @@ impl Producer {
                 message_type: 1, // Default type
                 sender_pid: std::process::id(),
                 sender_runtime: 1, // Rust
+                overflow: self.is_overflowed(msg),
                 flags: 0,
                 payload_len: msg.len() as u32,
             });
@@ -119,6 +121,8 @@ impl Producer {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
+        
+        let overflow = self.is_overflowed(message);
 
         let meta = MessageMeta {
             message_id: self.sequence_counter.fetch_add(1, Ordering::Relaxed),
@@ -127,6 +131,7 @@ impl Producer {
             message_type: 1, // Default type
             sender_pid: std::process::id(),
             sender_runtime: 1, // Rust
+            overflow: overflow,
             flags: 0,
             payload_len: message.len() as u32,
         };
@@ -150,6 +155,15 @@ impl Producer {
                 ))
             }
         }
+    }
+
+    /// return the bool true if message[:<1KB SIZE>] is overflowed
+    pub fn is_overflowed(&self, message: &[u8]) -> bool {
+        let OVERFLOW_THRESHOLD = (self.max_message_size * 90) / 100;
+        if message.get(OVERFLOW_THRESHOLD).is_some(){
+            return true;
+        }
+        false
     }
 
     /// Returns the channel ID for this producer

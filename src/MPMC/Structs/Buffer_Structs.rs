@@ -15,4 +15,5 @@ pub struct MessageMeta {
     pub sender_runtime: u16,
     pub flags: u16,
     pub payload_len: u32,
+    pub overflow: bool,
 }
