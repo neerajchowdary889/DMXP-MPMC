@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 use super::layout::ChannelEntry;
 use super::Buffer::{RingBuffer, Slot, MSG_INLINE};
+use crate::Core::sfu::BlobStoreBuilder;
 use crate::MPMC::Structs::Buffer_Structs::MessageMeta;
 
 impl RingBuffer {
@@ -13,11 +14,15 @@ impl RingBuffer {
     /// Caller must ensure `metadata` and `buffer_base` are valid pointers to shared memory.
     pub unsafe fn new(metadata: *const ChannelEntry, buffer_base: *mut u8) -> Self {
         let capacity = (*metadata).capacity as usize;
+        let sfu = BlobStoreBuilder::default()
+            .build()
+            .expect("Failed to create SFU Blob Store");
         Self {
             metadata,
             buffer_base,
             capacity,
             mask: capacity - 1,
+            sfu,
         }
     }
 
@@ -111,15 +116,29 @@ impl RingBuffer {
                     unsafe {
                         // Write metadata
                         (*slot_ptr).meta = **meta; // Clone meta
-                        (*slot_ptr).meta.payload_len = payload.len() as u32;
 
                         // Write payload
-                        let len = payload.len().min(MSG_INLINE);
-                        ptr::copy_nonoverlapping(
-                            payload.as_ptr(),
-                            (*slot_ptr).payload.as_mut_ptr(),
-                            len,
-                        );
+                        if (*slot_ptr).meta.overflow {
+                            let handle = self.sfu.append(payload).expect("Failed to append to SFU");
+                            let handle_slice = std::slice::from_raw_parts(
+                                &handle as *const _ as *const u8,
+                                std::mem::size_of::<sfb::BlobHandle>(),
+                            );
+                            ptr::copy_nonoverlapping(
+                                handle_slice.as_ptr(),
+                                (*slot_ptr).payload.as_mut_ptr(),
+                                handle_slice.len(),
+                            );
+                            (*slot_ptr).meta.payload_len = handle_slice.len() as u32;
+                        } else {
+                            (*slot_ptr).meta.payload_len = payload.len() as u32;
+                            let len = payload.len().min(MSG_INLINE);
+                            ptr::copy_nonoverlapping(
+                                payload.as_ptr(),
+                                (*slot_ptr).payload.as_mut_ptr(),
+                                len,
+                            );
+                        }
 
                         // Publish
                         (&(*slot_ptr).sequence).store(target_seq + 1, Release);
@@ -155,15 +174,29 @@ impl RingBuffer {
                     unsafe {
                         // Write metadata
                         (*slot_ptr).meta = meta;
-                        (*slot_ptr).meta.payload_len = payload.len() as u32;
 
                         // Write payload
-                        let len = payload.len().min(MSG_INLINE);
-                        ptr::copy_nonoverlapping(
-                            payload.as_ptr(),
-                            (*slot_ptr).payload.as_mut_ptr(),
-                            len,
-                        );
+                        if (*slot_ptr).meta.overflow {
+                            let handle = self.sfu.append(payload).expect("Failed to append to SFU");
+                            let handle_slice = std::slice::from_raw_parts(
+                                &handle as *const _ as *const u8,
+                                std::mem::size_of::<sfb::BlobHandle>(),
+                            );
+                            ptr::copy_nonoverlapping(
+                                handle_slice.as_ptr(),
+                                (*slot_ptr).payload.as_mut_ptr(),
+                                handle_slice.len(),
+                            );
+                            (*slot_ptr).meta.payload_len = handle_slice.len() as u32;
+                        } else {
+                            (*slot_ptr).meta.payload_len = payload.len() as u32;
+                            let len = payload.len().min(MSG_INLINE);
+                            ptr::copy_nonoverlapping(
+                                payload.as_ptr(),
+                                (*slot_ptr).payload.as_mut_ptr(),
+                                len,
+                            );
+                        }
 
                         // Publish
                         (&(*slot_ptr).sequence).store(tail + 1, Release);
@@ -203,13 +236,37 @@ impl RingBuffer {
                     let (meta, payload) = unsafe {
                         let meta = (*slot_ptr).meta;
                         let len = meta.payload_len as usize;
-                        let mut payload = vec![0u8; len];
+                        let mut stored_payload = vec![0u8; len];
                         ptr::copy_nonoverlapping(
                             (*slot_ptr).payload.as_ptr(),
-                            payload.as_mut_ptr(),
+                            stored_payload.as_mut_ptr(),
                             len,
                         );
-                        (meta, payload)
+
+                        if meta.overflow && len == std::mem::size_of::<sfb::BlobHandle>() {
+                            let handle = {
+                                let mut h = std::mem::MaybeUninit::<sfb::BlobHandle>::uninit();
+                                ptr::copy_nonoverlapping(
+                                    stored_payload.as_ptr(),
+                                    h.as_mut_ptr() as *mut u8,
+                                    len,
+                                );
+                                h.assume_init()
+                            };
+                            match self.sfu.get(&handle) {
+                                Some(data) => {
+                                    let mut final_meta = meta;
+                                    final_meta.payload_len = data.len() as u32;
+                                    (final_meta, data)
+                                }
+                                None => {
+                                    eprintln!("Failed to get from SFU: handle expired or invalid");
+                                    (meta, vec![])
+                                }
+                            }
+                        } else {
+                            (meta, stored_payload)
+                        }
                     };
 
                     // free slot for future producers
