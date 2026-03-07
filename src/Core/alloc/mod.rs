@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 const MAGIC_NUMBER: u64 = 0x444D58505F4D454D; // "DMXP_MEM"
 
 /// Represents a single channel's memory region
+#[derive(Clone)]
 pub struct ChannelPartition {
     /// The underlying ring buffer for this channel
     pub buffer: RingBuffer,

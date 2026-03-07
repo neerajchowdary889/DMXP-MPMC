@@ -9,17 +9,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The producer is responsible for writing messages to the ring buffer
 /// and managing the lifecycle of the shared memory region.
 pub struct Producer {
-    _allocator: crate::Core::alloc::SharedMemoryAllocator,
+    _allocator: Arc<crate::Core::alloc::SharedMemoryAllocator>,
     channel: crate::Core::alloc::ChannelPartition,
     channel_id: u32,
     keep_alive: Arc<AtomicBool>,
     max_message_size: usize,
-    sequence_counter: AtomicU64,
+    sequence_counter: Arc<AtomicU64>,
+}
+
+impl Clone for Producer {
+    fn clone(&self) -> Self {
+        Self {
+            _allocator: self._allocator.clone(),
+            channel: self.channel.clone(),
+            channel_id: self.channel_id,
+            keep_alive: self.keep_alive.clone(),
+            max_message_size: self.max_message_size,
+            sequence_counter: self.sequence_counter.clone(),
+        }
+    }
 }
 
 impl Producer {
     pub(crate) fn new(
-        allocator: crate::Core::alloc::SharedMemoryAllocator,
+        allocator: Arc<crate::Core::alloc::SharedMemoryAllocator>,
         channel: crate::Core::alloc::ChannelPartition,
         channel_id: u32,
     ) -> Self {
@@ -32,7 +45,7 @@ impl Producer {
             channel_id,
             keep_alive: Arc::new(AtomicBool::new(true)),
             max_message_size,
-            sequence_counter: AtomicU64::new(0),
+            sequence_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 

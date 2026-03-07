@@ -1,5 +1,6 @@
 use super::{Consumer, Producer};
 use crate::Core::alloc::SharedMemoryAllocator;
+use std::sync::Arc;
 
 pub struct ChannelBuilder {
     buffer_size: usize,
@@ -57,7 +58,7 @@ impl ChannelBuilder {
             }
         };
 
-        Ok(Producer::new(allocator, channel, self.channel_id))
+        Ok(Producer::new(Arc::new(allocator), channel, self.channel_id))
     }
 
     pub fn with_capacity(mut self, capacity: usize) -> Self {
@@ -73,6 +74,6 @@ impl ChannelBuilder {
                 format!("Channel {} not found", self.channel_id),
             )
         })?;
-        Ok(Consumer::new(allocator, channel, self.channel_id))
+        Ok(Consumer::new(Arc::new(allocator), channel, self.channel_id))
     }
 }
