@@ -58,7 +58,6 @@ impl Producer {
         let mut meta_storage: Vec<MessageMeta> = Vec::with_capacity(batch_size);
 
         for (i, msg) in messages.iter().enumerate() {
-
             meta_storage.push(MessageMeta {
                 message_id: base_msg_id + i as u64,
                 timestamp_ns: now,
@@ -121,7 +120,7 @@ impl Producer {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        
+
         let overflow = self.is_overflowed(message);
 
         let meta = MessageMeta {
@@ -160,7 +159,7 @@ impl Producer {
     /// return the bool true if message[:<1KB SIZE>] is overflowed
     pub fn is_overflowed(&self, message: &[u8]) -> bool {
         let OVERFLOW_THRESHOLD = (self.max_message_size * 90) / 100;
-        if message.get(OVERFLOW_THRESHOLD).is_some(){
+        if message.get(OVERFLOW_THRESHOLD).is_some() {
             return true;
         }
         false

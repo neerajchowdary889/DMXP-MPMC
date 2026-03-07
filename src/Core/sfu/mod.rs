@@ -78,7 +78,7 @@ impl BlobStoreBuilder {
 
 impl Default for BlobStoreBuilder {
     fn default() -> Self {
-        Self::new()
+        Self::memory_efficient()
     }
 }
 
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_builder_defaults() {
-        let store = BlobStoreBuilder::new().build().unwrap();
+        let store = BlobStoreBuilder::default().build().unwrap();
         let handle = store.append(b"test data").unwrap();
         let data = store.get(&handle).unwrap();
         println!("Data: {:?}", String::from_utf8_lossy(&data));

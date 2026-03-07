@@ -3,7 +3,9 @@
 use super::layout::ChannelEntry;
 use crate::MPMC::Structs::Buffer_Structs::MessageMeta;
 
+use sfb::PinnedBlobStore;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 /// The size of the inline payload per slot.
 /// This should be tuned per deployment.
@@ -54,6 +56,9 @@ pub struct RingBuffer {
     /// A bitmask used to wrap sequence numbers around the buffer.
     /// Calculated as `capacity - 1`.
     pub(crate) mask: usize,
+
+    /// SFU Blob Store for overflow storage
+    pub(crate) sfu: Arc<PinnedBlobStore>,
 }
 
 unsafe impl Send for RingBuffer {}
