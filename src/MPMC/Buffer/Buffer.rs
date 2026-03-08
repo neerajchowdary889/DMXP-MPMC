@@ -43,6 +43,7 @@ pub struct Slot {
 ///   be written.
 /// - **Consumers (Dequeue)**: Consumers claim a message by atomically incrementing `head`.
 ///   They use the `sequence` field to know when a message has been fully written by a producer.
+#[derive(Clone)]
 pub struct RingBuffer {
     /// Pointer to the channel metadata in the control area.
     pub(crate) metadata: *const ChannelEntry,

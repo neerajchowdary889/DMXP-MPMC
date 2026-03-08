@@ -9,16 +9,28 @@ use std::time::{Duration, Instant};
 /// The consumer is responsible for reading messages from the ring buffer
 /// and managing the lifecycle of the shared memory region.
 pub struct Consumer {
-    _allocator: crate::Core::alloc::SharedMemoryAllocator,
+    _allocator: Arc<crate::Core::alloc::SharedMemoryAllocator>,
     channel: crate::Core::alloc::ChannelPartition,
     channel_id: u32,
     producer_alive: Arc<AtomicBool>,
-    last_message_time: std::sync::atomic::AtomicI64,
+    last_message_time: Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl Clone for Consumer {
+    fn clone(&self) -> Self {
+        Self {
+            _allocator: self._allocator.clone(),
+            channel: self.channel.clone(),
+            channel_id: self.channel_id,
+            producer_alive: self.producer_alive.clone(),
+            last_message_time: self.last_message_time.clone(),
+        }
+    }
 }
 
 impl Consumer {
     pub(crate) fn new(
-        allocator: crate::Core::alloc::SharedMemoryAllocator,
+        allocator: Arc<crate::Core::alloc::SharedMemoryAllocator>,
         channel: crate::Core::alloc::ChannelPartition,
         channel_id: u32,
     ) -> Self {
@@ -27,7 +39,7 @@ impl Consumer {
             channel,
             channel_id,
             producer_alive: Arc::new(AtomicBool::new(true)),
-            last_message_time: std::sync::atomic::AtomicI64::new(0),
+            last_message_time: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
 
