@@ -4,7 +4,7 @@ import time
 import os
 
 # Load Library
-lib_path = os.path.abspath("target/debug/libdmxp_kvcache.so")
+lib_path = os.path.abspath("target/debug/libdmxp_mpmc.so")
 lib = ctypes.CDLL(lib_path)
 
 # Define Producer New

@@ -1,5 +1,5 @@
 // In examples/consumer.rs
-use dmxp_kvcache::MPMC::ChannelBuilder;
+use dmxp_mpmc::MPMC::ChannelBuilder;
 use std::env;
 
 fn main() -> std::io::Result<()> {
@@ -19,7 +19,7 @@ fn main() -> std::io::Result<()> {
     println!("Consumer: Waiting for {} channels...", num_channels);
 
     // First, try to attach to shared memory and see what channels exist
-    match dmxp_kvcache::Core::alloc::SharedMemoryAllocator::attach(128 * 1024 * 1024) {
+    match dmxp_mpmc::Core::alloc::SharedMemoryAllocator::attach(128 * 1024 * 1024) {
         Ok(allocator) => {
             println!("Consumer: Successfully attached to shared memory");
             println!(

@@ -1,6 +1,6 @@
-use dmxp_kvcache::Core::alloc::SharedMemoryAllocator;
-use dmxp_kvcache::MPMC::Buffer::layout::GlobalHeader;
-use dmxp_kvcache::MPMC::Buffer::RingBuffer;
+use dmxp_mpmc::Core::alloc::SharedMemoryAllocator;
+use dmxp_mpmc::MPMC::Buffer::layout::GlobalHeader;
+use dmxp_mpmc::MPMC::Buffer::RingBuffer;
 use serial_test::serial;
 use std::fs;
 use std::io;

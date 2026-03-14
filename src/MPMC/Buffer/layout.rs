@@ -51,7 +51,7 @@ pub struct ChannelEntry {
 /// and the table of channel entries.
 #[repr(C, align(128))]
 pub struct GlobalHeader {
-    /// A "magic number" to identify the memory region as a DMXP-KVCache buffer.
+    /// A "magic number" to identify the memory region as a DMXP-mpmc buffer.
     pub magic: u64,
 
     /// The version of the memory layout.

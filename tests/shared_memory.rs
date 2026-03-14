@@ -3,7 +3,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux_tests {
-    use dmxp_kvcache::Core::SharedMemory::{attach_shared_memory, create_shared_memory};
+    use dmxp_mpmc::Core::SharedMemory::{attach_shared_memory, create_shared_memory};
 
     #[test]
     fn test_create_shared_memory() {
@@ -57,7 +57,7 @@ mod linux_tests {
         let handle = shm.raw_handle();
 
         match handle {
-            dmxp_kvcache::Core::RawHandle::Fd(fd) => {
+            dmxp_mpmc::Core::RawHandle::Fd(fd) => {
                 assert!(fd > 0, "File descriptor should be positive");
             }
         }
@@ -120,7 +120,7 @@ mod linux_tests {
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux_tests {
-    use dmxp_kvcache::Core::{attach_shared_memory, create_shared_memory};
+    use dmxp_mpmc::Core::{attach_shared_memory, create_shared_memory};
 
     #[test]
     fn test_unsupported_platform() {

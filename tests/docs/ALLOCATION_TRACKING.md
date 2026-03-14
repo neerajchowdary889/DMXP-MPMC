@@ -1,6 +1,6 @@
 # Memory Allocation Tracking Guide
 
-This document describes tools and methods to track memory allocations in DMXP-KVCache.
+This document describes tools and methods to track memory allocations in DMXP-mpmc.
 
 ## 1. dhat-rs (Recommended for Heap Profiling)
 
