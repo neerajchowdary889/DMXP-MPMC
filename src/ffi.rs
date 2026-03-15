@@ -361,7 +361,8 @@ pub extern "C" fn dmxp_consumer_peek_timeout(
     let result = if timeout_ms < 0 {
         // Blocking
         match consumer.peek() {
-            Ok(res) => Some(res),
+            Ok(Some(res)) => Some(res),
+            Ok(None) => return DMXP_ERROR_EMPTY,
             Err(_) => return DMXP_ERROR_INTERNAL,
         }
     } else if timeout_ms == 0 {
