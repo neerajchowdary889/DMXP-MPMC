@@ -179,6 +179,49 @@ impl Consumer {
         }
     }
 
+    /// Peeks at a message without consuming it.
+    /// Returns a copy of the message and metadata, but leaves the message in the queue.
+    /// If no message is available, returns None.
+    pub fn peek(&self) -> std::io::Result<Option<(MessageMeta, Vec<u8>)>> {
+        let buffer = self.channel.buffer();
+        
+        match buffer.peek() {
+            Some((meta, data)) => {
+                // Create a copy of the data for the caller
+                let data_copy = data.to_vec();
+                Ok(Some((meta, data_copy)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Peeks at a message with timeout without consuming it.
+    /// Returns a copy of the message and metadata, but leaves the message in the queue.
+    pub fn peek_timeout(&self, timeout: Duration) -> std::io::Result<Option<(MessageMeta, Vec<u8>)>> {
+        let start = Instant::now();
+
+        loop {
+            match self.peek() {
+                Ok(Some(data)) => return Ok(Some(data)),
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        return Ok(None);
+                    }
+                    // Use exponential backoff to reduce CPU usage
+                    let elapsed = start.elapsed();
+                    let remaining = timeout.saturating_sub(elapsed);
+                    let sleep_time = std::cmp::min(remaining, Duration::from_millis(10));
+                    std::thread::sleep(sleep_time);
+                }
+                Err(e) => return Err(e),
+            }
+
+            if start.elapsed() >= timeout {
+                return Ok(None);
+            }
+        }
+    }
+
     /// Returns the channel ID for this consumer
     pub fn channel_id(&self) -> u32 {
         self.channel_id
