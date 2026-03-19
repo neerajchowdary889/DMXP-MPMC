@@ -7,11 +7,18 @@
 //   cargo test --test allocation_test track_allocations_with_memory_stats -- --nocapture
 
 use crossbeam_utils::CachePadded;
+use dmxp_kvcache::Core::sfu::BlobStoreBuilder;
 use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
 use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
+use sfb::PinnedBlobStore;
 use std::alloc::{alloc, Layout};
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
+fn make_test_sfu() -> Arc<PinnedBlobStore> {
+    BlobStoreBuilder::default().build().expect("test SFU")
+}
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -49,7 +56,7 @@ fn track_allocations_with_dhat() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }
@@ -85,7 +92,7 @@ fn track_allocations_with_memory_stats() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }
@@ -119,7 +126,7 @@ fn verify_zero_allocation_enqueue_dequeue() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }

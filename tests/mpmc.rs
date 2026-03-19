@@ -1,11 +1,17 @@
 use crossbeam_utils::CachePadded;
+use dmxp_kvcache::Core::sfu::BlobStoreBuilder;
 use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
 use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
+use sfb::PinnedBlobStore;
 use std::alloc::{alloc, Layout};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+
+fn make_test_sfu() -> Arc<PinnedBlobStore> {
+    BlobStoreBuilder::default().build().expect("test SFU")
+}
 
 fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
     ChannelEntry {
@@ -43,7 +49,8 @@ fn mpmc_correctness_many_threads() {
     unsafe impl Send for SendRingBuffer {}
     unsafe impl Sync for SendRingBuffer {}
 
-    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    let sfu = make_test_sfu();
+    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr, sfu) }));
     unsafe {
         buffer.0.init_slots();
     }
@@ -112,7 +119,8 @@ fn mpmc_throughput_print() {
     unsafe impl Send for SendRingBuffer {}
     unsafe impl Sync for SendRingBuffer {}
 
-    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    let sfu = make_test_sfu();
+    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr, sfu) }));
     unsafe {
         buffer.0.init_slots();
     }

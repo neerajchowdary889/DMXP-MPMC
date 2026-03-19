@@ -43,6 +43,24 @@ impl Consumer {
         }
     }
 
+    /// Create a consumer with a shared lifecycle flag.
+    /// The `alive_flag` should be the same Arc shared with the Producer
+    /// so the consumer can detect when the producer terminates via its Drop impl.
+    pub(crate) fn new_with_lifecycle(
+        allocator: Arc<crate::Core::alloc::SharedMemoryAllocator>,
+        channel: crate::Core::alloc::ChannelPartition,
+        channel_id: u32,
+        alive_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            _allocator: allocator,
+            channel,
+            channel_id,
+            producer_alive: alive_flag,
+            last_message_time: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        }
+    }
+
     /// Updates the last message timestamp to now
     fn update_last_message_time(&self) {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -93,8 +111,16 @@ impl Consumer {
     }
 
     /// Receives a message and metadata, blocking until one is available.
+    ///
+    /// Uses a hybrid spin-then-futex strategy to avoid both busy-spinning
+    /// and missed wake-ups:
+    /// - First few iterations: spin with hint (low latency for burst traffic)
+    /// - After spins exhausted: block on futex (low CPU for idle periods)
     pub fn receive_blocking_with_meta(&self) -> std::io::Result<(MessageMeta, Vec<u8>)> {
         let buffer = self.channel.buffer();
+        let mut spin_count: u32 = 0;
+        const MAX_SPINS: u32 = 4;
+
         loop {
             match buffer.dequeue() {
                 Some((meta, payload)) => {
@@ -108,8 +134,15 @@ impl Consumer {
                             "Producer has terminated",
                         ));
                     }
-                    // Wait for signal
-                    buffer.wait_for_data();
+                    if spin_count < MAX_SPINS {
+                        // Brief spin for low-latency burst scenarios
+                        std::hint::spin_loop();
+                        spin_count += 1;
+                    } else {
+                        // Fall back to futex wait (blocks, saves CPU)
+                        buffer.wait_for_data();
+                        spin_count = 0;
+                    }
                 }
             }
         }

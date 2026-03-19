@@ -13,13 +13,19 @@
 // cargo test -- --nocapture
 
 use crossbeam_utils::CachePadded;
+use dmxp_kvcache::Core::sfu::BlobStoreBuilder;
 use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
 use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
+use sfb::PinnedBlobStore;
 use std::alloc::{alloc, Layout};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::thread;
+
+fn make_test_sfu() -> Arc<PinnedBlobStore> {
+    BlobStoreBuilder::default().build().expect("test SFU")
+}
 
 fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
     ChannelEntry {
@@ -55,7 +61,7 @@ fn test_basic_ringbuffer_with_dhat() {
     println!("Allocated backing buffer");
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }
@@ -96,7 +102,7 @@ fn test_basic_ringbuffer_with_memory_stats() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }
@@ -152,7 +158,7 @@ fn test_mpmc_stress_with_dhat() {
     let entry_ptr: *const ChannelEntry = &*entry;
     // RingBuffer holds a raw pointer to entry, so we must ensure entry outlives it.
     // In this test, entry lives until the end of the function.
-    let rb = Arc::new(unsafe { RingBuffer::new(entry_ptr, ptr) });
+    let rb = Arc::new(unsafe { RingBuffer::new(entry_ptr, ptr, make_test_sfu()) });
     unsafe {
         rb.init_slots();
     }
@@ -179,7 +185,7 @@ fn test_mpmc_stress_with_dhat() {
     unsafe impl Send for SendRingBuffer {}
     unsafe impl Sync for SendRingBuffer {}
 
-    let send_rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    let send_rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr, make_test_sfu()) }));
 
     for id in 0..producers {
         let rb = send_rb.clone();
@@ -255,7 +261,7 @@ fn test_mpmc_stress_with_memory_stats() {
     unsafe impl Send for SendRingBuffer {}
     unsafe impl Sync for SendRingBuffer {}
 
-    let send_rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    let send_rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr, make_test_sfu()) }));
     unsafe {
         send_rb.0.init_slots();
     }
@@ -336,7 +342,7 @@ fn test_verify_zero_allocation() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }

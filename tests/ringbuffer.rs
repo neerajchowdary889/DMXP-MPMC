@@ -1,11 +1,17 @@
 use crossbeam_utils::CachePadded;
+use dmxp_kvcache::Core::sfu::BlobStoreBuilder;
 use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_kvcache::MPMC::Buffer::RingBuffer;
 use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
+use sfb::PinnedBlobStore;
 use std::alloc::{alloc, Layout};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread;
+
+fn make_test_sfu() -> Arc<PinnedBlobStore> {
+    BlobStoreBuilder::default().build().expect("test SFU")
+}
 
 fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
     ChannelEntry {
@@ -36,7 +42,7 @@ fn simple_enqueue_dequeue() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }
@@ -65,7 +71,7 @@ fn full_buffer() {
     let (ptr, layout) = make_aligned_backing(capacity);
 
     let entry = create_dummy_channel_entry(capacity as u64);
-    let rb = unsafe { RingBuffer::new(&entry, ptr) };
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
     unsafe {
         rb.init_slots();
     }
@@ -93,7 +99,7 @@ fn full_buffer() {
 }
 
 #[test]
-fn small_mpmc_correctness() {
+fn small_spsc_fifo_correctness() {
     let capacity = 8;
     let (ptr, layout) = make_aligned_backing(capacity);
 
@@ -105,7 +111,7 @@ fn small_mpmc_correctness() {
     unsafe impl Send for SendRingBuffer {}
     unsafe impl Sync for SendRingBuffer {}
 
-    let rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr) }));
+    let rb = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr, make_test_sfu()) }));
     unsafe {
         rb.0.init_slots();
     }

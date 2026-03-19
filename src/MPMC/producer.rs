@@ -13,7 +13,6 @@ pub struct Producer {
     channel: crate::Core::alloc::ChannelPartition,
     channel_id: u32,
     keep_alive: Arc<AtomicBool>,
-    max_message_size: usize,
     sequence_counter: Arc<AtomicU64>,
 }
 
@@ -24,7 +23,6 @@ impl Clone for Producer {
             channel: self.channel.clone(),
             channel_id: self.channel_id,
             keep_alive: self.keep_alive.clone(),
-            max_message_size: self.max_message_size,
             sequence_counter: self.sequence_counter.clone(),
         }
     }
@@ -36,15 +34,29 @@ impl Producer {
         channel: crate::Core::alloc::ChannelPartition,
         channel_id: u32,
     ) -> Self {
-        // Max message size is fixed by the inline payload size
-        let max_message_size = MSG_INLINE;
-
         Self {
             _allocator: allocator,
             channel,
             channel_id,
             keep_alive: Arc::new(AtomicBool::new(true)),
-            max_message_size,
+            sequence_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Create a producer with a shared lifecycle flag.
+    /// The `alive_flag` should be the same Arc shared with the Consumer
+    /// so the consumer can detect when the producer terminates.
+    pub(crate) fn new_with_lifecycle(
+        allocator: Arc<crate::Core::alloc::SharedMemoryAllocator>,
+        channel: crate::Core::alloc::ChannelPartition,
+        channel_id: u32,
+        alive_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            _allocator: allocator,
+            channel,
+            channel_id,
+            keep_alive: alive_flag,
             sequence_counter: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -75,10 +87,10 @@ impl Producer {
                 message_id: base_msg_id + i as u64,
                 timestamp_ns: now,
                 channel_id: self.channel_id,
-                message_type: 1, // Default type
+                message_type: 1,
                 sender_pid: std::process::id(),
-                sender_runtime: 1, // Rust
-                overflow: self.is_overflowed(msg),
+                sender_runtime: 1,
+                overflow: self.overflow_flag(msg),
                 flags: 0,
                 payload_len: msg.len() as u32,
             });
@@ -105,26 +117,17 @@ impl Producer {
 
     /// Sends a message through the channel.
     ///
+    /// Messages smaller than 90% of MSG_INLINE are stored inline in the slot.
+    /// Larger messages are automatically overflowed to SFB (Stable Fragmented Buffer).
+    ///
     /// # Arguments
     /// * `message` - The message to send
     ///
     /// # Returns
     /// * `Ok(())` if the message was sent successfully
-    /// * `Err(io::Error)` if the message is too large or the buffer is full
+    /// * `Err(io::Error)` if the buffer is full
     pub fn send<T: AsRef<[u8]>>(&self, message: T) -> std::io::Result<()> {
         let message = message.as_ref();
-
-        // Check message size before attempting to enqueue
-        if message.len() > self.max_message_size {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Message too large ({} > {})",
-                    message.len(),
-                    self.max_message_size
-                ),
-            ));
-        }
 
         let buffer = self.channel.buffer();
 
@@ -134,16 +137,16 @@ impl Producer {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        let overflow = self.is_overflowed(message);
+        let overflow = self.overflow_flag(message);
 
         let meta = MessageMeta {
             message_id: self.sequence_counter.fetch_add(1, Ordering::Relaxed),
             timestamp_ns: now,
             channel_id: self.channel_id,
-            message_type: 1, // Default type
+            message_type: 1,
             sender_pid: std::process::id(),
-            sender_runtime: 1, // Rust
-            overflow: overflow,
+            sender_runtime: 1,
+            overflow,
             flags: 0,
             payload_len: message.len() as u32,
         };
@@ -169,13 +172,15 @@ impl Producer {
         }
     }
 
-    /// return the bool true if message[:<1KB SIZE>] is overflowed
-    pub fn is_overflowed(&self, message: &[u8]) -> bool {
-        let OVERFLOW_THRESHOLD = (self.max_message_size * 90) / 100;
-        if message.get(OVERFLOW_THRESHOLD).is_some() {
-            return true;
+    /// Returns the overflow flag as u8: 1 if the message should be overflowed to SFB, 0 otherwise.
+    /// Overflow threshold is 90% of MSG_INLINE.
+    fn overflow_flag(&self, message: &[u8]) -> u8 {
+        let overflow_threshold = (MSG_INLINE * 90) / 100;
+        if message.len() > overflow_threshold {
+            1
+        } else {
+            0
         }
-        false
     }
 
     /// Returns the channel ID for this producer
@@ -190,9 +195,13 @@ impl Producer {
     pub fn keep_alive(&self) -> &Arc<AtomicBool> {
         &self.keep_alive
     }
+}
 
-    /// Returns the maximum message size that can be sent
-    pub fn max_message_size(&self) -> usize {
-        self.max_message_size
+impl Drop for Producer {
+    fn drop(&mut self) {
+        // Signal that this producer is terminating
+        self.keep_alive.store(false, Ordering::Release);
+        // Wake any blocked consumers so they can detect producer death
+        self.channel.buffer().signal_consumer();
     }
 }
