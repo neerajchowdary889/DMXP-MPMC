@@ -7,10 +7,10 @@
 "tu": "µs",
 "Mtu": "s",
 "tuth": 10,
-"cmd": "/home/neeraj/Codes/DMXP-MPMC/target/debug/deps/allocation_tracking-6c16cc29b4e785f0",
-"pid": 53890,
+"cmd": "/home/neeraj/Codes/DMXP-MPMC/target/debug/deps/allocation_tracking-62fcefd80ef0d892",
+"pid": 31159,
 "tg": 0,
-"te": 3349,
+"te": 1904,
 "pps": [],
 "ftbl": [
 "[root]"

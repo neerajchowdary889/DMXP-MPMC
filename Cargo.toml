@@ -1,5 +1,5 @@
 [package]
-name = "DMXP-KVCache"
+name = "DMXP-MPMC"
 version = "0.1.0"
 edition = "2021"
 description = "A high-performance, persistent, in-memory key-value cache with an ordered keyspace."
@@ -23,6 +23,6 @@ sha2 = "0.10"
 sfb = { package = "stable-fragmented-buffer", git = "https://github.com/neerajchowdary889/stable-fragmented-buffer", branch = "main" }
 
 [lib]
-name = "dmxp_kvcache"
+name = "dmxp_mpmc"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]

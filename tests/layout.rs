@@ -2,8 +2,8 @@
 // These tests assert sizes, alignments, and field offsets for
 // MessageMeta and SlotHeader. They also print the observed values
 // to aid debugging when a mismatch occurs on a given platform.
-// use dmxp_kvcache::MPMC::Buffer::SlotHeader; // Removed
-use dmxp_kvcache::MPMC::Structs::MessageMeta;
+// use dmxp_mpmc::MPMC::Buffer::SlotHeader; // Removed
+use dmxp_mpmc::MPMC::Structs::MessageMeta;
 use memoffset::offset_of;
 use std::mem::{align_of, size_of};
 

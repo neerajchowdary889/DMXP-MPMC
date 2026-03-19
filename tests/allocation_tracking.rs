@@ -13,11 +13,9 @@
 // cargo test -- --nocapture
 
 use crossbeam_utils::CachePadded;
-use dmxp_kvcache::Core::sfu::BlobStoreBuilder;
-use dmxp_kvcache::MPMC::Buffer::layout::ChannelEntry;
-use dmxp_kvcache::MPMC::Buffer::RingBuffer;
-use dmxp_kvcache::MPMC::Structs::Buffer_Structs::MessageMeta;
-use sfb::PinnedBlobStore;
+use dmxp_mpmc::MPMC::Buffer::layout::ChannelEntry;
+use dmxp_mpmc::MPMC::Buffer::RingBuffer;
+use dmxp_mpmc::MPMC::Structs::Buffer_Structs::MessageMeta;
 use std::alloc::{alloc, Layout};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;

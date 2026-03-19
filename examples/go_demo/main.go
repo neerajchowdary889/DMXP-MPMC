@@ -1,7 +1,7 @@
 package main
 
 /*
-#cgo LDFLAGS: -L../../target/debug -ldmxp_kvcache
+#cgo LDFLAGS: -L../../target/debug -ldmxp_mpmc
 #include <stdlib.h>
 #include <stdint.h>
 

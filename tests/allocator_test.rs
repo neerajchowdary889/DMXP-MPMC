@@ -1,8 +1,8 @@
 // tests/allocator_test.rs
 
-use dmxp_kvcache::Core::alloc::SharedMemoryAllocator;
-use dmxp_kvcache::MPMC::Buffer::layout::GlobalHeader;
-use dmxp_kvcache::MPMC::Buffer::RingBuffer;
+use dmxp_mpmc::Core::alloc::SharedMemoryAllocator;
+use dmxp_mpmc::MPMC::Buffer::layout::GlobalHeader;
+use dmxp_mpmc::MPMC::Buffer::RingBuffer;
 use std::fs;
 use std::io;
 use std::path::Path;

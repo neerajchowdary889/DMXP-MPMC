@@ -294,6 +294,124 @@ pub extern "C" fn dmxp_consumer_receive(
     dmxp_consumer_receive_ext(handle, timeout, out_buf, out_len, ptr::null_mut())
 }
 
+/// Peek at a message without consuming it.
+/// Returns a copy of the message data, but leaves the message in the queue.
+#[no_mangle]
+pub extern "C" fn dmxp_consumer_peek(
+    handle: *mut ConsumerHandle,
+    out_buf: *mut u8,
+    out_len: *mut usize,
+    out_meta: *mut FFIMessageMeta,
+) -> i32 {
+    if handle.is_null() || out_len.is_null() {
+        return DMXP_ERROR_NULL_POINTER;
+    }
+
+    let consumer = unsafe { &(*handle).inner };
+    let max_len = unsafe { *out_len };
+
+    match consumer.peek() {
+        Ok(Some((meta, data))) => {
+            if data.len() > max_len {
+                unsafe { *out_len = data.len() };
+                return DMXP_ERROR_INVALID_ARG;
+            }
+
+            unsafe {
+                if !out_buf.is_null() {
+                    ptr::copy_nonoverlapping(data.as_ptr(), out_buf, data.len());
+                }
+                *out_len = data.len();
+
+                if !out_meta.is_null() {
+                    (*out_meta).message_id = meta.message_id;
+                    (*out_meta).timestamp_ns = meta.timestamp_ns;
+                    (*out_meta).channel_id = meta.channel_id;
+                    (*out_meta).message_type = meta.message_type;
+                    (*out_meta).sender_pid = meta.sender_pid;
+                    (*out_meta).sender_runtime = meta.sender_runtime;
+                    (*out_meta).flags = meta.flags;
+                    (*out_meta).payload_len = meta.payload_len;
+                }
+            }
+            DMXP_SUCCESS
+        }
+        Ok(None) => DMXP_ERROR_EMPTY,
+        Err(_) => DMXP_ERROR_INTERNAL,
+    }
+}
+
+/// Peek at a message with timeout without consuming it.
+/// Returns a copy of the message data, but leaves the message in the queue.
+#[no_mangle]
+pub extern "C" fn dmxp_consumer_peek_timeout(
+    handle: *mut ConsumerHandle,
+    timeout_ms: i32,
+    out_buf: *mut u8,
+    out_len: *mut usize,
+    out_meta: *mut FFIMessageMeta,
+) -> i32 {
+    if handle.is_null() || out_len.is_null() {
+        return DMXP_ERROR_NULL_POINTER;
+    }
+
+    let consumer = unsafe { &(*handle).inner };
+    let max_len = unsafe { *out_len };
+
+    let result = if timeout_ms < 0 {
+        // Blocking
+        match consumer.peek() {
+            Ok(Some(res)) => Some(res),
+            Ok(None) => return DMXP_ERROR_EMPTY,
+            Err(_) => return DMXP_ERROR_INTERNAL,
+        }
+    } else if timeout_ms == 0 {
+        // Non-blocking
+        match consumer.peek() {
+            Ok(Some(res)) => Some(res),
+            Ok(None) => return DMXP_ERROR_EMPTY,
+            Err(_) => return DMXP_ERROR_INTERNAL,
+        }
+    } else {
+        // Timeout
+        match consumer
+            .peek_timeout(std::time::Duration::from_millis(timeout_ms as u64))
+        {
+            Ok(Some(res)) => Some(res),
+            Ok(None) => return DMXP_ERROR_TIMEOUT,
+            Err(_) => return DMXP_ERROR_INTERNAL,
+        }
+    };
+
+    if let Some((meta, data)) = result {
+        if data.len() > max_len {
+            unsafe { *out_len = data.len() };
+            return DMXP_ERROR_INVALID_ARG;
+        }
+
+        unsafe {
+            if !out_buf.is_null() {
+                ptr::copy_nonoverlapping(data.as_ptr(), out_buf, data.len());
+            }
+            *out_len = data.len();
+
+            if !out_meta.is_null() {
+                (*out_meta).message_id = meta.message_id;
+                (*out_meta).timestamp_ns = meta.timestamp_ns;
+                (*out_meta).channel_id = meta.channel_id;
+                (*out_meta).message_type = meta.message_type;
+                (*out_meta).sender_pid = meta.sender_pid;
+                (*out_meta).sender_runtime = meta.sender_runtime;
+                (*out_meta).flags = meta.flags;
+                (*out_meta).payload_len = meta.payload_len;
+            }
+        }
+        DMXP_SUCCESS
+    } else {
+        DMXP_ERROR_INTERNAL
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn dmxp_consumer_free(handle: *mut ConsumerHandle) {
     if !handle.is_null() {

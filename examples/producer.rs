@@ -1,6 +1,6 @@
 // In examples/producer.rs
-use dmxp_kvcache::Core::alloc::SharedMemoryAllocator;
-use dmxp_kvcache::MPMC::ChannelBuilder;
+use dmxp_mpmc::Core::alloc::SharedMemoryAllocator;
+use dmxp_mpmc::MPMC::ChannelBuilder;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::sync::atomic::Ordering;

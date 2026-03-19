@@ -307,4 +307,76 @@ impl RingBuffer {
             crate::Core::futex::futex_wait(signal, val);
         }
     }
+
+    /// Peeks at the next available message without consuming it.
+    /// Returns a copy of the message data, but leaves the message in the ring buffer.
+    pub fn peek(&self) -> Option<(MessageMeta, Vec<u8>)> {
+        let head_atomic = unsafe { &(*self.metadata).head };
+        let tail_atomic = unsafe { &(*self.metadata).tail };
+
+        loop {
+            let head = head_atomic.load(Acquire);
+            let tail = tail_atomic.load(Acquire);
+            let dif = (tail as i64) - (head as i64);
+
+            if dif < 0 {
+                // empty
+                return None;
+            } else if dif >= 0 && dif < self.capacity as i64 {
+                // data available
+                let idx = (head as usize) & self.mask;
+                let slot_ptr = unsafe { self.slot_mut(idx) };
+
+                // Check if producer is finished
+                let seq = unsafe { (&(*slot_ptr).sequence).load(Acquire) };
+                if seq != head {
+                    // producer not finished; retry
+                    std::hint::spin_loop();
+                    continue;
+                }
+
+                unsafe {
+                    let meta = (*slot_ptr).meta;
+                    let len = meta.payload_len as usize;
+                    let mut stored_payload = vec![0u8; len];
+
+                    // Copy payload data
+                    ptr::copy_nonoverlapping(
+                        (*slot_ptr).payload.as_ptr(),
+                        stored_payload.as_mut_ptr(),
+                        len,
+                    );
+
+                    // Handle SFU overflow case
+                    if meta.overflow && len == std::mem::size_of::<sfb::BlobHandle>() {
+                        let handle = {
+                            let mut h = std::mem::MaybeUninit::<sfb::BlobHandle>::uninit();
+                            ptr::copy_nonoverlapping(
+                                stored_payload.as_ptr(),
+                                h.as_mut_ptr() as *mut u8,
+                                len,
+                            );
+                            h.assume_init()
+                        };
+                        match self.sfu.get(&handle) {
+                            Some(data) => {
+                                let mut final_meta = meta;
+                                final_meta.payload_len = data.len() as u32;
+                                return Some((final_meta, data));
+                            }
+                            None => {
+                                eprintln!("Failed to get from SFU during peek: handle expired or invalid");
+                                return None;
+                            }
+                        }
+                    } else {
+                        return Some((meta, stored_payload));
+                    }
+                }
+            } else {
+                // full
+                return None;
+            }
+        }
+    }
 }

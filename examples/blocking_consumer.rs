@@ -1,4 +1,4 @@
-use dmxp_kvcache::MPMC::ChannelBuilder;
+use dmxp_mpmc::MPMC::ChannelBuilder;
 use std::env;
 
 fn main() -> std::io::Result<()> {
