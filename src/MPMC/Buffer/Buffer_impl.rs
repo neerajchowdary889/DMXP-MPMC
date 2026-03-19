@@ -348,7 +348,7 @@ impl RingBuffer {
                     );
 
                     // Handle SFU overflow case
-                    if meta.overflow && len == std::mem::size_of::<sfb::BlobHandle>() {
+                    if meta.is_overflow() && len == std::mem::size_of::<sfb::BlobHandle>() {
                         let handle = {
                             let mut h = std::mem::MaybeUninit::<sfb::BlobHandle>::uninit();
                             ptr::copy_nonoverlapping(

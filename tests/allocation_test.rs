@@ -13,6 +13,8 @@ use dmxp_mpmc::MPMC::Structs::Buffer_Structs::MessageMeta;
 use std::alloc::{alloc, Layout};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use dmxp_mpmc::Core::sfu::BlobStoreBuilder;
+use sfb::PinnedBlobStore;
 
 fn make_test_sfu() -> Arc<PinnedBlobStore> {
     BlobStoreBuilder::default().build().expect("test SFU")
