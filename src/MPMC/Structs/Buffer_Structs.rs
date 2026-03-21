@@ -15,5 +15,15 @@ pub struct MessageMeta {
     pub sender_runtime: u16,
     pub flags: u16,
     pub payload_len: u32,
-    pub overflow: bool,
+    /// 0 = inline payload, 1 = overflow (BlobHandle stored in payload).
+    /// Uses u8 instead of bool for guaranteed C ABI stability.
+    pub overflow: u8,
+}
+
+impl MessageMeta {
+    /// Check if this message is overflowed to SFB.
+    #[inline]
+    pub fn is_overflow(&self) -> bool {
+        self.overflow != 0
+    }
 }

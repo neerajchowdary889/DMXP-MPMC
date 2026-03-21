@@ -25,7 +25,8 @@ pub trait SharedMemoryBackend: Send + Sync + Debug {
 /// Platform-specific handle type
 #[derive(Debug, Clone, Copy)]
 pub enum RawHandle {
-    /// Unix file descriptor (Linux)
+    /// Unix file descriptor (Linux, macOS)
+    #[cfg(unix)]
     Fd(RawFd),
 }
 
@@ -44,22 +45,39 @@ pub fn attach_shared_memory(name: &str, size: usize) -> io::Result<Box<dyn Share
     Ok(Box::new(linux::LinuxSharedMemory::attach(name, size)?))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Creates a new shared memory region (macOS).
+#[cfg(target_os = "macos")]
+pub fn create_shared_memory(
+    size: usize,
+    name: Option<&str>,
+) -> io::Result<Box<dyn SharedMemoryBackend>> {
+    Ok(Box::new(macos::MacOSSharedMemory::create(size, name)?))
+}
+
+/// Attaches to an existing shared memory region (macOS).
+#[cfg(target_os = "macos")]
+pub fn attach_shared_memory(name: &str, size: usize) -> io::Result<Box<dyn SharedMemoryBackend>> {
+    Ok(Box::new(macos::MacOSSharedMemory::attach(name, size)?))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Creates a new shared memory region (unsupported platform).
 pub fn create_shared_memory(
     _size: usize,
     _name: Option<&str>,
 ) -> io::Result<Box<dyn SharedMemoryBackend>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "Shared memory only supported on Linux",
+        "Shared memory not supported on this platform",
     ))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Attaches to an existing shared memory region (unsupported platform).
 pub fn attach_shared_memory(_name: &str, _size: usize) -> io::Result<Box<dyn SharedMemoryBackend>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "Shared memory only supported on Linux",
+        "Shared memory not supported on this platform",
     ))
 }
 
@@ -211,6 +229,176 @@ mod linux {
     }
 
     impl SharedMemoryBackend for LinuxSharedMemory {
+        fn as_ptr(&self) -> *mut u8 {
+            self.ptr.as_ptr()
+        }
+
+        fn size(&self) -> usize {
+            self.size
+        }
+
+        fn raw_handle(&self) -> RawHandle {
+            RawHandle::Fd(self.fd)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::*;
+    use std::ffi::CString;
+    use std::os::unix::io::RawFd;
+    use std::ptr::{self, NonNull};
+
+    #[derive(Debug)]
+    pub struct MacOSSharedMemory {
+        ptr: NonNull<u8>,
+        size: usize,
+        fd: RawFd,
+        original_ptr: Option<(*mut u8, usize)>,
+    }
+
+    unsafe impl Send for MacOSSharedMemory {}
+    unsafe impl Sync for MacOSSharedMemory {}
+
+    impl MacOSSharedMemory {
+        pub fn create(size: usize, name: Option<&str>) -> io::Result<Self> {
+            let shm_name = match name {
+                Some(n) => format!("/dmxp_{}", n),
+                None => format!(
+                    "/dmxp_anon_{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ),
+            };
+
+            let c_name = CString::new(shm_name.as_str())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+            // Create shared memory object
+            let fd = unsafe {
+                libc::shm_open(
+                    c_name.as_ptr(),
+                    libc::O_CREAT | libc::O_RDWR | libc::O_EXCL,
+                    0o600,
+                )
+            };
+            if fd < 0 {
+                // If it already exists, try to open it
+                let fd = unsafe {
+                    libc::shm_open(c_name.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600)
+                };
+                if fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // Set size
+                if unsafe { libc::ftruncate(fd, size as i64) } != 0 {
+                    let err = io::Error::last_os_error();
+                    unsafe { libc::close(fd) };
+                    return Err(err);
+                }
+                return Self::mmap(fd, size);
+            }
+
+            // Set size
+            if unsafe { libc::ftruncate(fd, size as i64) } != 0 {
+                let err = io::Error::last_os_error();
+                unsafe {
+                    libc::close(fd);
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+                return Err(err);
+            }
+
+            // If anonymous, unlink immediately (memory persists until all fds close)
+            if name.is_none() {
+                unsafe { libc::shm_unlink(c_name.as_ptr()) };
+            }
+
+            Self::mmap(fd, size)
+        }
+
+        pub fn attach(name: &str, expected_size: usize) -> io::Result<Self> {
+            let shm_name = format!("/dmxp_{}", name);
+            let c_name = CString::new(shm_name.as_str())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+            let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
+            if fd < 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Failed to open shared memory: {}", shm_name),
+                ));
+            }
+
+            // Get actual size via fstat
+            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+            if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+                let err = io::Error::last_os_error();
+                unsafe { libc::close(fd) };
+                return Err(err);
+            }
+
+            let size = stat.st_size as usize;
+            if size < expected_size {
+                unsafe { libc::close(fd) };
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Shared memory too small: expected {}, got {}",
+                        expected_size, size
+                    ),
+                ));
+            }
+
+            Self::mmap(fd, size)
+        }
+
+        fn mmap(fd: RawFd, size: usize) -> io::Result<Self> {
+            let map_size = size + 127; // Extra for alignment
+
+            let ptr = unsafe {
+                libc::mmap(
+                    ptr::null_mut(),
+                    map_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    fd,
+                    0,
+                )
+            };
+
+            if ptr == libc::MAP_FAILED {
+                let err = io::Error::last_os_error();
+                unsafe { libc::close(fd) };
+                return Err(err);
+            }
+
+            let aligned_ptr = ((ptr as usize + 127) & !127) as *mut u8;
+
+            Ok(Self {
+                ptr: NonNull::new(aligned_ptr).unwrap(),
+                size,
+                fd,
+                original_ptr: Some((ptr as *mut u8, map_size)),
+            })
+        }
+    }
+
+    impl Drop for MacOSSharedMemory {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some((ptr, size)) = self.original_ptr {
+                    libc::munmap(ptr as *mut libc::c_void, size);
+                }
+                libc::close(self.fd);
+            }
+        }
+    }
+
+    impl SharedMemoryBackend for MacOSSharedMemory {
         fn as_ptr(&self) -> *mut u8 {
             self.ptr.as_ptr()
         }

@@ -1,10 +1,12 @@
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+use std::sync::Arc;
+
+use sfb::PinnedBlobStore;
 
 use super::layout::ChannelEntry;
 use super::Buffer::{RingBuffer, Slot, MSG_INLINE};
-use crate::Core::sfu::BlobStoreBuilder;
 use crate::MPMC::Structs::Buffer_Structs::MessageMeta;
 
 impl RingBuffer {
@@ -12,11 +14,10 @@ impl RingBuffer {
     ///
     /// # Safety
     /// Caller must ensure `metadata` and `buffer_base` are valid pointers to shared memory.
-    pub unsafe fn new(metadata: *const ChannelEntry, buffer_base: *mut u8) -> Self {
+    /// The `sfu` store must be the SAME `Arc` shared between producer and consumer
+    /// RingBuffer instances for overflow to work correctly.
+    pub unsafe fn new(metadata: *const ChannelEntry, buffer_base: *mut u8, sfu: Arc<PinnedBlobStore>) -> Self {
         let capacity = (*metadata).capacity as usize;
-        let sfu = BlobStoreBuilder::default()
-            .build()
-            .expect("Failed to create SFU Blob Store");
         Self {
             metadata,
             buffer_base,
@@ -51,15 +52,20 @@ impl RingBuffer {
     }
 
     /// Enqueue a batch of messages.
-    /// Returns the starting index on success, or None if the ring DOES NOT have enough contiguous space.
-    /// Note: This implementation is "all or nothing" for the batch.
+    /// Returns the starting index on success, or None if the ring is genuinely full.
+    ///
+    /// This is "all or nothing" — either the entire batch is claimed, or nothing is.
+    /// The implementation correctly distinguishes between:
+    /// - **Full** (`dif < 0`): consumer hasn't freed slots → return `None`
+    /// - **Stale tail** (`dif > 0`): another producer claimed slots → retry with fresh tail
+    /// - **Contention** (CAS failure): another producer won the race → retry
     pub fn enqueue_batch(&self, messages: &[(&MessageMeta, &[u8])]) -> Option<usize> {
         let batch_size = messages.len();
         if batch_size == 0 {
-            return Some(0); // Nothing to do
+            return Some(0);
         }
         if batch_size > self.capacity {
-            return None; // Impossible to fit
+            return None;
         }
 
         let meta_ptr = self.metadata;
@@ -68,7 +74,8 @@ impl RingBuffer {
         loop {
             let tail = tail_atomic.load(Relaxed);
 
-            // 1. Check if all slots in the batch range are available
+            // 1. Pre-check: verify all slots in the batch range are available
+            let mut is_full = false;
             let mut all_available = true;
             for i in 0..batch_size {
                 let target_seq = tail + i as u64;
@@ -78,47 +85,44 @@ impl RingBuffer {
 
                 let dif = seq as i64 - target_seq as i64;
                 if dif < 0 {
-                    // Start of batch is full? or middle is full?
-                    // If any slot is full, we can't proceed with this batch at this tail position.
+                    // Slot genuinely occupied — consumer hasn't freed it yet.
+                    is_full = true;
                     all_available = false;
                     break;
                 } else if dif > 0 {
-                    // Should theoretically not happen if we read tail correctly,
-                    // unless tail moved massively forward and we read an old tail?
-                    // Or someone else claimed it.
+                    // Slot sequence is ahead of our expected position.
+                    // This means our tail read is stale — another producer already
+                    // claimed this slot. Retry from the outer loop with a fresh tail.
                     all_available = false;
                     break;
                 }
+                // dif == 0 → slot is free for this sequence, continue checking
             }
 
             if !all_available {
-                // Check if it's full. If head is far behind, return None.
-                // Actually standard enqueue returns None if diff < 0.
-                // For now, if we can't claim, we return None (full) or retry.
-                // Ideally we should retry if it's just contention, but return None if truly full.
-                // To differentiate, we'd check head. But for simplicity, let's just return None and let caller decide (spin or drop).
-                // Actually, standard enqueue spins on "producer not finished" (dif > 0) but returns None on "full" (dif < 0).
-                // We will return None if any slot is not ready. Caller (Producer) usually retries.
-                return None;
+                if is_full {
+                    return None; // genuinely full — caller should back off
+                }
+                // Stale tail read or contention — retry with fresh tail
+                std::hint::spin_loop();
+                continue;
             }
 
-            // 2. Try to claim the whole batch
+            // 2. Try to atomically claim the entire batch range
             if tail_atomic
                 .compare_exchange_weak(tail, tail + batch_size as u64, AcqRel, Relaxed)
                 .is_ok()
             {
-                // We own the range [tail, tail + batch_size)
+                // We own [tail, tail + batch_size). Write each slot.
                 for (i, (meta, payload)) in messages.iter().enumerate() {
                     let target_seq = tail + i as u64;
                     let idx = (target_seq as usize) & self.mask;
                     let slot_ptr = unsafe { self.slot_mut(idx) };
 
                     unsafe {
-                        // Write metadata
-                        (*slot_ptr).meta = **meta; // Clone meta
+                        (*slot_ptr).meta = **meta;
 
-                        // Write payload
-                        if (*slot_ptr).meta.overflow {
+                        if (*slot_ptr).meta.is_overflow() {
                             let handle = self.sfu.append(payload).expect("Failed to append to SFU");
                             let handle_slice = std::slice::from_raw_parts(
                                 &handle as *const _ as *const u8,
@@ -140,13 +144,13 @@ impl RingBuffer {
                             );
                         }
 
-                        // Publish
+                        // Publish: signal consumers this slot is ready
                         (&(*slot_ptr).sequence).store(target_seq + 1, Release);
                     }
                 }
                 return Some((tail as usize) & self.mask);
             }
-            // logical contention, retry loop
+            // CAS failed — another producer won. Retry.
             std::hint::spin_loop();
         }
     }
@@ -176,7 +180,7 @@ impl RingBuffer {
                         (*slot_ptr).meta = meta;
 
                         // Write payload
-                        if (*slot_ptr).meta.overflow {
+                        if (*slot_ptr).meta.is_overflow() {
                             let handle = self.sfu.append(payload).expect("Failed to append to SFU");
                             let handle_slice = std::slice::from_raw_parts(
                                 &handle as *const _ as *const u8,
@@ -243,7 +247,7 @@ impl RingBuffer {
                             len,
                         );
 
-                        if meta.overflow && len == std::mem::size_of::<sfb::BlobHandle>() {
+                        if meta.is_overflow() && len == std::mem::size_of::<sfb::BlobHandle>() {
                             let handle = {
                                 let mut h = std::mem::MaybeUninit::<sfb::BlobHandle>::uninit();
                                 ptr::copy_nonoverlapping(
@@ -344,7 +348,7 @@ impl RingBuffer {
                     );
 
                     // Handle SFU overflow case
-                    if meta.overflow && len == std::mem::size_of::<sfb::BlobHandle>() {
+                    if meta.is_overflow() && len == std::mem::size_of::<sfb::BlobHandle>() {
                         let handle = {
                             let mut h = std::mem::MaybeUninit::<sfb::BlobHandle>::uninit();
                             ptr::copy_nonoverlapping(

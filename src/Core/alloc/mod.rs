@@ -1,9 +1,13 @@
 use crate::Core::SharedMemory::SharedMemoryBackend;
+use crate::Core::sfu::BlobStoreBuilder;
 use crate::MPMC::Buffer::layout::{GlobalHeader, MAX_CHANNELS};
 use crate::MPMC::Buffer::RingBuffer;
 use crossbeam_utils::CachePadded;
+use sfb::PinnedBlobStore;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 mod debug;
 mod getters;
 
@@ -29,6 +33,9 @@ pub struct SharedMemoryAllocator {
     header: *mut GlobalHeader,
     next_channel_id: AtomicU64,
     allocation_mutex: Mutex<()>, // For thread-safe channel creation
+    /// Shared SFB store for overflow data — ALL RingBuffer instances
+    /// created by this allocator share this same Arc.
+    sfu: Arc<PinnedBlobStore>,
 }
 
 impl SharedMemoryAllocator {
@@ -89,6 +96,9 @@ impl SharedMemoryAllocator {
             header: header_ptr,
             next_channel_id: AtomicU64::new(0),
             allocation_mutex: Mutex::new(()),
+            sfu: BlobStoreBuilder::default()
+                .build()
+                .expect("Failed to create shared SFU Blob Store"),
         })
     }
 
@@ -142,6 +152,9 @@ impl SharedMemoryAllocator {
             header,
             next_channel_id: AtomicU64::new(next_id),
             allocation_mutex: Mutex::new(()),
+            sfu: BlobStoreBuilder::default()
+                .build()
+                .expect("Failed to create shared SFU Blob Store"),
         })
     }
 
@@ -251,7 +264,7 @@ impl SharedMemoryAllocator {
 
         // Initialize ring buffer view
         let buffer_ptr = unsafe { self.shm.as_ptr().add(offset) };
-        let ring_buffer = unsafe { RingBuffer::new(channel, buffer_ptr) };
+        let ring_buffer = unsafe { RingBuffer::new(channel, buffer_ptr, self.sfu.clone())};
 
         // Initialize slots (only done by creator)
         unsafe {
@@ -282,7 +295,7 @@ impl SharedMemoryAllocator {
         }
 
         let buffer_ptr = unsafe { self.shm.as_ptr().add(channel.band_offset as usize) };
-        let ring_buffer = unsafe { RingBuffer::new(channel, buffer_ptr) };
+        let ring_buffer = unsafe { RingBuffer::new(channel, buffer_ptr, self.sfu.clone()) };
 
         Some(ChannelPartition {
             buffer: ring_buffer,
@@ -333,6 +346,13 @@ impl SharedMemoryAllocator {
         // Set capacity to 0 to mark the channel as free
         channel.capacity = 0;
 
+        // Decrement channel count to keep it accurate
+        unsafe {
+            if (*self.header).channel_count > 0 {
+                (*self.header).channel_count -= 1;
+            }
+        }
+
         Ok(())
     }
 
@@ -343,7 +363,7 @@ impl SharedMemoryAllocator {
                 let ch = &(*self.header).channels[i];
                 if ch.capacity != 0 {
                     let buffer_ptr = self.shm.as_ptr().add(ch.band_offset as usize);
-                    let ring_buffer = RingBuffer::new(ch, buffer_ptr);
+                    let ring_buffer = RingBuffer::new(ch, buffer_ptr, self.sfu.clone());
                     channels.push(ChannelPartition {
                         buffer: ring_buffer,
                         channel_id: ch.channel_id,
