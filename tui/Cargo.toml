@@ -1,0 +1,14 @@
+[package]
+name = "dmxp-tui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tui"
+path = "src/main.rs"
+
+[dependencies]
+dmxp_mpmc = { path = "..", package = "DMXP-MPMC" }
+sfb = { package = "stable-fragmented-buffer", git = "https://github.com/neerajchowdary889/stable-fragmented-buffer", branch = "main" }
+ratatui = "0.29"
+crossterm = "0.28"

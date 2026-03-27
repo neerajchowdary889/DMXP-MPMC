@@ -32,11 +32,20 @@ impl SharedMemoryAllocator {
     }
 
     /// Check if the allocator has been properly initialized
-    /// 
+    ///
     /// Returns true if the magic number in the header matches the expected value.
     /// This can be used to verify the allocator is attached to valid shared memory.
     pub fn is_initialized(&self) -> bool {
         // Safety: We assume the header pointer is valid if the allocator exists
         unsafe { !self.header.is_null() && (*self.header).magic == super::MAGIC_NUMBER }
+    }
+
+    /// Get a reference to the shared SFB (Stable Fragmented Buffer) blob store.
+    ///
+    /// Returns a reference to the Arc — no clone, no new owner.
+    /// Callers (e.g. TUI monitor) can read SFB stats through this reference
+    /// as long as the allocator is alive.
+    pub fn sfu(&self) -> &std::sync::Arc<sfb::PinnedBlobStore> {
+        &self.sfu
     }
 }

@@ -290,6 +290,25 @@ impl RingBuffer {
             }
         }
     }
+    // ── Monitoring accessors (read-only, used by TUI) ──────────────────────
+
+    /// Current producer cursor (tail). Used by external monitors to compute fill level.
+    pub fn tail(&self) -> u64 {
+        unsafe { (*self.metadata).tail.load(Acquire) }
+    }
+
+    /// Current consumer cursor (head). Used by external monitors to compute fill level.
+    pub fn head(&self) -> u64 {
+        unsafe { (*self.metadata).head.load(Acquire) }
+    }
+
+    /// Slot capacity of this ring buffer.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// Signal consumers that new data is available
     pub fn signal_consumer(&self) {
         unsafe {
