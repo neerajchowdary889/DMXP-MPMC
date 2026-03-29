@@ -6,6 +6,18 @@ use std::time::Duration;
 pub struct BlobStoreBuilder {
     config: Config,
     cleanup_interval: Option<Duration>,
+    /// If set, the store uses cross-process shared memory mode.
+    shared_mode: Option<SharedModeConfig>,
+}
+
+/// Configuration for shared (cross-process) mode.
+struct SharedModeConfig {
+    /// Namespace prefix for `/dev/shm/{namespace}_ctrl`, `_data_*` files.
+    namespace: String,
+    /// Byte size of each data chunk (default: 32 MB).
+    chunk_size: usize,
+    /// If true, this process creates the shared region. If false, it attaches.
+    is_creator: bool,
 }
 
 impl BlobStoreBuilder {
@@ -13,7 +25,8 @@ impl BlobStoreBuilder {
     pub fn new() -> Self {
         Self {
             config: Config::default(),
-            cleanup_interval: Some(Duration::from_millis(100)), // Default background cleanup interval
+            cleanup_interval: Some(Duration::from_millis(100)),
+            shared_mode: None,
         }
     }
 
@@ -22,6 +35,7 @@ impl BlobStoreBuilder {
         Self {
             config: Config::performance(),
             cleanup_interval: Some(Duration::from_millis(100)),
+            shared_mode: None,
         }
     }
 
@@ -30,6 +44,7 @@ impl BlobStoreBuilder {
         Self {
             config: Config::memory_efficient(),
             cleanup_interval: Some(Duration::from_millis(500)),
+            shared_mode: None,
         }
     }
 
@@ -63,10 +78,54 @@ impl BlobStoreBuilder {
         self
     }
 
+    /// Enable cross-process shared memory mode (creator).
+    ///
+    /// The first process to call this creates the `/dev/shm` files.
+    /// Subsequent processes should use `with_shared_attach()`.
+    #[cfg(unix)]
+    pub fn with_shared_mode(mut self, namespace: &str, chunk_size: usize) -> Self {
+        self.shared_mode = Some(SharedModeConfig {
+            namespace: namespace.to_string(),
+            chunk_size,
+            is_creator: true,
+        });
+        self
+    }
+
+    /// Enable cross-process shared memory mode (attacher).
+    ///
+    /// Attaches to an existing shared region created by another process.
+    #[cfg(unix)]
+    pub fn with_shared_attach(mut self, namespace: &str, chunk_size: usize) -> Self {
+        self.shared_mode = Some(SharedModeConfig {
+            namespace: namespace.to_string(),
+            chunk_size,
+            is_creator: false,
+        });
+        self
+    }
+
     /// Consume the builder and return an Arc<PinnedBlobStore>,
     /// automatically starting background cleanup if an interval is configured.
     pub fn build(self) -> Result<Arc<PinnedBlobStore>, sfb::BlobError> {
-        let store = Arc::new(PinnedBlobStore::new(self.config)?);
+        let store = match self.shared_mode {
+            #[cfg(unix)]
+            Some(shared_cfg) => {
+                if shared_cfg.is_creator {
+                    Arc::new(PinnedBlobStore::new_shared(
+                        self.config,
+                        &shared_cfg.namespace,
+                        shared_cfg.chunk_size,
+                    )?)
+                } else {
+                    Arc::new(PinnedBlobStore::attach_shared(
+                        self.config,
+                        &shared_cfg.namespace,
+                    )?)
+                }
+            }
+            _ => Arc::new(PinnedBlobStore::new(self.config)?),
+        };
 
         if let Some(interval) = self.cleanup_interval {
             store.start_cleanup(interval);

@@ -23,7 +23,8 @@ libc = "0.2"
 parking_lot = { version = "0.12.5", features = ["deadlock_detection"] }
 ctrlc = "3.2.2"
 sha2 = "0.10"
-sfb = { package = "stable-fragmented-buffer", git = "https://github.com/neerajchowdary889/stable-fragmented-buffer", branch = "main" }
+# sfb = { package = "stable-fragmented-buffer", git = "https://github.com/neerajchowdary889/stable-fragmented-buffer", branch = "main" }
+sfb = { package = "stable-fragmented-buffer", path = "../stable-fragmented-buffer" }
 
 [lib]
 name = "dmxp_mpmc"

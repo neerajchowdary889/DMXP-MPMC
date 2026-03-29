@@ -6,7 +6,51 @@ use crossbeam_utils::CachePadded;
 use sfb::PinnedBlobStore;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// Shared-memory namespace for the overflow arena.
+/// Maps to `/dev/shm/dmxp_ovf_ctrl` and `/dev/shm/dmxp_ovf_data_*`.
+const SFU_NAMESPACE: &str = "dmxp_ovf";
+/// Default chunk size: 32 MB (matches SharedBackend::DEFAULT_CHUNK_SIZE).
+const SFU_CHUNK_SIZE: usize = 32 * 1024 * 1024;
+
+/// Single SFU instance for the entire process.
+/// All `SharedMemoryAllocator` instances (and therefore all channels and ring
+/// buffers) in this process share the same `Arc<PinnedBlobStore>`, so that
+/// overflow `OverflowHandle`s written by a producer are resolvable by any
+/// consumer in **any** process that attaches to the same namespace.
+static PROCESS_SFU: OnceLock<Arc<PinnedBlobStore>> = OnceLock::new();
+
+/// Create (or reuse) the process-level SFU in **creator** mode.
+///
+/// The first call creates the `/dev/shm` files; subsequent calls from
+/// the same process return the same `Arc`.
+fn process_sfu_create() -> Arc<PinnedBlobStore> {
+    PROCESS_SFU
+        .get_or_init(|| {
+            BlobStoreBuilder::new()
+                .with_shared_mode(SFU_NAMESPACE, SFU_CHUNK_SIZE)
+                .build()
+                .expect("Failed to create process-level shared SFU")
+        })
+        .clone()
+}
+
+/// Create (or reuse) the process-level SFU in **attacher** mode.
+///
+/// Attaches to an existing shared region created by another process.
+/// If called first in a process (before `process_sfu_create`), the
+/// `OnceLock` ensures this initialization wins.
+fn process_sfu_attach() -> Arc<PinnedBlobStore> {
+    PROCESS_SFU
+        .get_or_init(|| {
+            BlobStoreBuilder::new()
+                .with_shared_attach(SFU_NAMESPACE, SFU_CHUNK_SIZE)
+                .build()
+                .expect("Failed to attach process-level shared SFU")
+        })
+        .clone()
+}
 
 mod debug;
 mod getters;
@@ -96,9 +140,7 @@ impl SharedMemoryAllocator {
             header: header_ptr,
             next_channel_id: AtomicU64::new(0),
             allocation_mutex: Mutex::new(()),
-            sfu: BlobStoreBuilder::default()
-                .build()
-                .expect("Failed to create shared SFU Blob Store"),
+            sfu: process_sfu_create(),
         })
     }
 
@@ -152,9 +194,7 @@ impl SharedMemoryAllocator {
             header,
             next_channel_id: AtomicU64::new(next_id),
             allocation_mutex: Mutex::new(()),
-            sfu: BlobStoreBuilder::default()
-                .build()
-                .expect("Failed to create shared SFU Blob Store"),
+            sfu: process_sfu_attach(),
         })
     }
 

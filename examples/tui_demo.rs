@@ -89,7 +89,7 @@ fn main() -> std::io::Result<()> {
 
     let s2 = stop.clone();
     thread::spawn(move || {
-        // 950 bytes > 90% of MSG_INLINE (1024) → overflows to SFB
+        // 950 bytes > 921-byte overflow threshold (90% of MSG_INLINE=1024) → overflows to SFB
         let msg = vec![0xFFu8; 950];
         while !s2.load(Ordering::Relaxed) {
             let _ = p2.send(&msg);

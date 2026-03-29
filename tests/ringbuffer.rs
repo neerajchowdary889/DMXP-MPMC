@@ -3,14 +3,22 @@ use dmxp_mpmc::MPMC::Buffer::layout::ChannelEntry;
 use dmxp_mpmc::MPMC::Buffer::RingBuffer;
 use dmxp_mpmc::MPMC::Structs::Buffer_Structs::MessageMeta;
 use std::alloc::{alloc, Layout};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::Arc;
 use dmxp_mpmc::Core::sfu::BlobStoreBuilder;
 use sfb::PinnedBlobStore;
 use std::thread;
 
+/// Atomic counter to generate unique shm namespaces per test.
+static TEST_NS_COUNTER: AtomicU32 = AtomicU32::new(0);
+
 fn make_test_sfu() -> Arc<PinnedBlobStore> {
-    BlobStoreBuilder::default().build().expect("test SFU")
+    let id = TEST_NS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ns = format!("dmxp_test_{}", id);
+    BlobStoreBuilder::new()
+        .with_shared_mode(&ns, 4 * 1024 * 1024) // 4 MB chunks for tests
+        .build()
+        .expect("test SFU")
 }
 
 fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
@@ -147,3 +155,42 @@ fn small_spsc_fifo_correctness() {
         std::alloc::dealloc(ptr, layout);
     }
 }
+
+/// Verify that messages exceeding the 90% overflow threshold are correctly
+/// stored in the SharedBackend and retrieved intact via OverflowHandle.
+#[test]
+fn overflow_roundtrip_shared() {
+    let capacity = 16;
+    let (ptr, layout) = make_aligned_backing(capacity);
+
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let rb = unsafe { RingBuffer::new(&entry, ptr, make_test_sfu()) };
+    unsafe {
+        rb.init_slots();
+    }
+
+    // MSG_INLINE = 1024, overflow threshold = 90% = 921.
+    // Payload of 950 bytes triggers overflow.
+    let overflow_payload: Vec<u8> = (0..950).map(|i| (i % 256) as u8).collect();
+
+    let mut meta = MessageMeta::default();
+    meta.overflow = 1; // Mark as overflow
+
+    // Enqueue
+    let idx = rb.enqueue(meta, &overflow_payload);
+    assert!(idx.is_some(), "enqueue of overflow message should succeed");
+
+    // Dequeue — the ring buffer should resolve the OverflowHandle via SharedBackend
+    let result = rb.dequeue();
+    assert!(result.is_some(), "dequeue of overflow message should succeed");
+
+    let (out_meta, data) = result.unwrap();
+    assert_eq!(data.len(), overflow_payload.len(), "overflow data length mismatch");
+    assert_eq!(data, overflow_payload, "overflow data content mismatch");
+    assert_eq!(out_meta.payload_len, overflow_payload.len() as u32);
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
+}
+
