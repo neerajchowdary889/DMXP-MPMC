@@ -278,7 +278,7 @@ mod macos {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
             // Create shared memory object
-            let fd = unsafe {
+            let mut fd = unsafe {
                 libc::shm_open(
                     c_name.as_ptr(),
                     libc::O_CREAT | libc::O_RDWR | libc::O_EXCL,
@@ -286,20 +286,28 @@ mod macos {
                 )
             };
             if fd < 0 {
-                // If it already exists, try to open it
-                let fd = unsafe {
-                    libc::shm_open(c_name.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600)
-                };
-                if fd < 0 {
-                    return Err(io::Error::last_os_error());
+                let first_err = io::Error::last_os_error();
+
+                // If it already exists, unlink it and try again
+                if first_err.kind() == io::ErrorKind::AlreadyExists {
+                    unsafe { libc::shm_unlink(c_name.as_ptr()) };
+
+                    fd = unsafe {
+                        libc::shm_open(
+                            c_name.as_ptr(),
+                            libc::O_CREAT | libc::O_RDWR | libc::O_EXCL,
+                            0o600,
+                        )
+                    };
+                    if fd < 0 {
+                        let retry_err = io::Error::last_os_error();
+                        return Err(retry_err);
+                    }
+                    // Now we have a fresh fd, continue to set size below
+                } else {
+                    // Some other error, just return it
+                    return Err(first_err);
                 }
-                // Set size
-                if unsafe { libc::ftruncate(fd, size as i64) } != 0 {
-                    let err = io::Error::last_os_error();
-                    unsafe { libc::close(fd) };
-                    return Err(err);
-                }
-                return Self::mmap(fd, size);
             }
 
             // Set size

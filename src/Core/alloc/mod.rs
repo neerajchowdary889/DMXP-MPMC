@@ -5,7 +5,7 @@ use crate::MPMC::Buffer::RingBuffer;
 use crossbeam_utils::CachePadded;
 use sfb::PinnedBlobStore;
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// Shared-memory namespace for the overflow arena.
@@ -21,6 +21,9 @@ const SFU_CHUNK_SIZE: usize = 32 * 1024 * 1024;
 /// consumer in **any** process that attaches to the same namespace.
 static PROCESS_SFU: OnceLock<Arc<PinnedBlobStore>> = OnceLock::new();
 
+/// Flag to ensure cleanup only happens once per process
+static CLEANUP_DONE: AtomicBool = AtomicBool::new(false);
+
 /// Create (or reuse) the process-level SFU in **creator** mode.
 ///
 /// The first call creates the `/dev/shm` files; subsequent calls from
@@ -28,6 +31,14 @@ static PROCESS_SFU: OnceLock<Arc<PinnedBlobStore>> = OnceLock::new();
 fn process_sfu_create() -> Arc<PinnedBlobStore> {
     PROCESS_SFU
         .get_or_init(|| {
+            // Clean up any orphaned files from previous crashes (only once per process)
+            if !CLEANUP_DONE.swap(true, Ordering::SeqCst) {
+                #[cfg(unix)]
+                if let Err(e) = sfb::backend::shared::SharedBackend::cleanup_namespace(SFU_NAMESPACE) {
+                    eprintln!("Warning: Failed to cleanup orphaned SFU files: {}", e);
+                }
+            }
+
             BlobStoreBuilder::new()
                 .with_shared_mode(SFU_NAMESPACE, SFU_CHUNK_SIZE)
                 .build()

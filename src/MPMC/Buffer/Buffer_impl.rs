@@ -246,6 +246,8 @@ impl RingBuffer {
                                 .expect("Invalid OverflowHandle in slot");
                             match self.sfu.resolve(&handle) {
                                 Some(data) => {
+                                    // Acknowledge the handle for cleanup
+                                    self.sfu.acknowledge_shared(&handle);
                                     let mut final_meta = meta;
                                     final_meta.payload_len = data.len() as u32;
                                     (final_meta, data.to_vec())

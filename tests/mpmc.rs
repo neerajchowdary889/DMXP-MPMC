@@ -14,6 +14,17 @@ fn make_test_sfu() -> Arc<PinnedBlobStore> {
     BlobStoreBuilder::default().build().expect("test SFU")
 }
 
+fn make_test_sfu_shared(namespace: &str) -> Arc<PinnedBlobStore> {
+    // Clean up any previous test artifacts
+    #[cfg(unix)]
+    let _ = sfb::backend::shared::SharedBackend::cleanup_namespace(namespace);
+
+    BlobStoreBuilder::new()
+        .with_shared_mode(namespace, 32 * 1024 * 1024)
+        .build()
+        .expect("test SFU shared")
+}
+
 fn create_dummy_channel_entry(capacity: u64) -> ChannelEntry {
     ChannelEntry {
         channel_id: 0,
@@ -160,6 +171,81 @@ fn mpmc_throughput_print() {
         "Throughput: {:.2} million ops/sec",
         (count as f64 / elapsed.as_secs_f64()) / 1_000_000.0
     );
+
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn mpmc_overflow_with_shared_backend() {
+    // Test that large messages (>1024 bytes) work correctly with shared backend
+    let capacity = 16;
+    let (ptr, layout) = make_aligned_backing(capacity);
+
+    let entry = create_dummy_channel_entry(capacity as u64);
+    let entry = Box::new(entry);
+    let entry_ptr: *const ChannelEntry = &*entry;
+
+    struct SendRingBuffer(RingBuffer);
+    unsafe impl Send for SendRingBuffer {}
+    unsafe impl Sync for SendRingBuffer {}
+
+    // Use shared backend SFU
+    let sfu = make_test_sfu_shared("test_overflow");
+    let buffer = Arc::new(SendRingBuffer(unsafe { RingBuffer::new(entry_ptr, ptr, sfu) }));
+    unsafe {
+        buffer.0.init_slots();
+    }
+
+    // Test with messages larger than MSG_INLINE (1024 bytes)
+    const OVERFLOW_SIZE: usize = 2048;
+    const NUM_MESSAGES: usize = 10;
+
+    let b_prod = buffer.clone();
+    let producer = thread::spawn(move || {
+        let mut meta = MessageMeta::default();
+        meta.overflow = 1; // Mark as overflow
+
+        for i in 0..NUM_MESSAGES {
+            let mut payload = vec![0xAAu8; OVERFLOW_SIZE];
+            payload[0] = i as u8; // Unique marker
+            payload[OVERFLOW_SIZE - 1] = i as u8;
+
+            while b_prod.0.enqueue(meta, &payload).is_none() {
+                thread::yield_now();
+            }
+        }
+    });
+
+    let b_cons = buffer.clone();
+    let consumer = thread::spawn(move || {
+        let mut received = 0;
+        while received < NUM_MESSAGES {
+            if let Some((meta, data)) = b_cons.0.dequeue() {
+                // Verify it's marked as overflow
+                assert_eq!(meta.overflow, 1);
+
+                // Verify size
+                assert_eq!(data.len(), OVERFLOW_SIZE, "Message {} has wrong size", received);
+
+                // Verify content markers
+                assert_eq!(data[0], received as u8, "Message {} has wrong start marker", received);
+                assert_eq!(data[OVERFLOW_SIZE - 1], received as u8, "Message {} has wrong end marker", received);
+
+                received += 1;
+            } else {
+                thread::yield_now();
+            }
+        }
+    });
+
+    producer.join().unwrap();
+    consumer.join().unwrap();
+
+    println!("✓ Successfully sent and received {} overflow messages ({} bytes each) via shared backend",
+             NUM_MESSAGES, OVERFLOW_SIZE);
 
     unsafe {
         std::alloc::dealloc(ptr, layout);

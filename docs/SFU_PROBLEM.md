@@ -141,22 +141,22 @@ The `BlobHandle` becomes a simple `{ shm_offset: u64, len: u32 }` — an offset 
 
 ## Summary
 
-| Scenario | Status | Notes |
-|---|---|---|
-| Same process, multiple channels | ✅ Fixed | `OnceLock` ensures one SFU per process |
-| Same process, multiple `ChannelBuilder` calls | ✅ Fixed | All share `PROCESS_SFU` |
-| Cross-process (separate binaries) | ✅ Fixed | Shared SFU via `/dev/shm/dmxp_ovf_*` chunked arena |
-| Cross-process via daemon + IPC | ❌ Wrong direction | Adds 10–100 µs latency per overflow message |
-| Cross-process via `/dev/shm` overflow band | ✅ Fixed | Zero-IPC; `SharedBackend` in `sfb` crate |
+| Scenario                                      | Status             | Notes                                                        |
+| --------------------------------------------- | ------------------ | ------------------------------------------------------------ |
+| Same process, multiple channels               | ✅ Fixed           | `OnceLock` ensures one SFU per process                       |
+| Same process, multiple `ChannelBuilder` calls | ✅ Fixed           | All share `PROCESS_SFU`                                      |
+| Cross-process (separate binaries)             | ✅ Fixed           | Shared SFU via `/dev/shm/dmxp_ovf_*` chunked arena          |
+| Cross-process via daemon + IPC                | ❌ Wrong direction | Adds 10–100 µs latency per overflow message                  |
+| Cross-process via `/dev/shm` overflow band    | ✅ Fixed           | Zero-IPC; `SharedBackend` in `sfb` crate                     |
 
 ## Relevant files
 
-| File | Role |
-|---|---|
-| `src/Core/alloc/mod.rs` | `PROCESS_SFU` static; `process_sfu_create()` / `process_sfu_attach()` build shared-mode store |
-| `src/Core/sfu/mod.rs` | `BlobStoreBuilder` wrapping the `sfb` crate; `with_shared_mode()` / `with_shared_attach()` |
-| `src/MPMC/Buffer/Buffer_impl.rs` | `enqueue` writes overflow to SFU via `append_shared()`; `dequeue` reads via `resolve()` using `OverflowHandle` |
-| `src/MPMC/producer.rs` | `overflow_flag()` — 90% of `MSG_INLINE` threshold |
-| `sfb::backend::shared` | `SharedBackend` — lock-free `/dev/shm` chunked arena (control file + data chunks) |
-| `sfb::types::overflow_handle` | `OverflowHandle` — 24-byte `#[repr(C)]` cross-process handle with `as_bytes()` / `from_bytes()` |
+| File                             | Role                                                                                      |
+| -------------------------------- | ----------------------------------------------------------------------------------------- |
+| `src/Core/alloc/mod.rs`          | `PROCESS_SFU` static; `process_sfu()` builds shared-mode store via `/dev/shm/dmxp_ovf_*` |
+| `src/Core/sfu/mod.rs`            | `BlobStoreBuilder` wrapping the `sfb` crate; `with_shared_mode()` / `with_shared_attach()`|
+| `src/MPMC/Buffer/Buffer_impl.rs` | `enqueue` writes overflow via `append_shared()`; `dequeue` reads via `resolve()`          |
+| `src/MPMC/producer.rs`           | `overflow_flag()` — 90% of `MSG_INLINE` threshold                                        |
+| `sfb::backend::shared`           | `SharedBackend` — lock-free `/dev/shm` chunked arena (control file + data chunks)         |
+| `sfb::types::overflow_handle`    | `OverflowHandle` — 24-byte `#[repr(C)]` cross-process handle                             |
 
