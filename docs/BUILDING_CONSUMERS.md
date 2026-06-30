@@ -19,7 +19,7 @@ This guide shows how to build DMXP-MPMC consumers and producers in different pro
 The easiest way is to use the provided `ChannelBuilder`:
 
 ```rust
-use dmxp_kvcache::MPMC::ChannelBuilder;
+use dmxp_mpmc::MPMC::ChannelBuilder;
 
 // Producer
 fn main() -> std::io::Result<()> {
@@ -55,7 +55,7 @@ fn main() -> std::io::Result<()> {
 For more control, use the low-level API:
 
 ```rust
-use dmxp_kvcache::Core::alloc::SharedMemoryAllocator;
+use dmxp_mpmc::Core::alloc::SharedMemoryAllocator;
 
 // Create shared memory
 let allocator = SharedMemoryAllocator::new(128 * 1024 * 1024)?;
@@ -140,9 +140,10 @@ class PythonConsumer:
         if sequence != head + 1:
             return None
 
-        # Read payload
+        # Read payload (payload_len at meta+32 = slot offset 40; payload at slot offset 48)
         payload_len = int.from_bytes(slot_data[40:44], 'little')
-        payload = slot_data[64:64+payload_len]
+        overflow    = slot_data[44]  # 0=inline, 1=SFU handle
+        payload = slot_data[48:48+payload_len]
 
         # Increment head
         new_head = head + 1
@@ -211,9 +212,10 @@ class PythonProducer:
         payload_len = len(payload_bytes)
 
         slot_data[40:44] = payload_len.to_bytes(4, 'little')
+        # slot_data[44] = 0  # overflow flag = 0 (inline)
 
-        # Write payload
-        slot_data[64:64+payload_len] = payload_bytes
+        # Write payload at offset 48 (no intermediate padding)
+        slot_data[48:48+payload_len] = payload_bytes
 
         # Write to shared memory
         self.mm.seek(slot_offset)
@@ -256,7 +258,7 @@ producer.send(0, "Hello from Python!")
 #include <stdatomic.h>
 
 #define MAX_CHANNELS 256
-#define MSG_INLINE 960
+#define MSG_INLINE 1024
 #define SLOT_SIZE 1088
 
 typedef struct {
@@ -273,7 +275,9 @@ typedef struct {
     uint16_t sender_runtime;
     uint16_t flags;
     uint32_t payload_len;
-} __attribute__((packed)) MessageMeta;
+    uint8_t  overflow;  /* 0 = inline, 1 = payload holds OverflowHandle */
+    /* 3 bytes implicit trailing padding → sizeof = 40 */
+} MessageMeta;  /* do NOT use __attribute__((packed)); struct has natural alignment */
 
 typedef struct {
     uint32_t channel_id;
@@ -297,10 +301,10 @@ typedef struct {
 } __attribute__((aligned(128))) GlobalHeader;
 
 typedef struct {
-    atomic_uint64_t sequence;
-    MessageMeta meta;
-    uint8_t _pad1[16];
-    uint8_t payload[MSG_INLINE];
+    atomic_uint64_t sequence;   /* offset 0, 8 bytes */
+    MessageMeta meta;           /* offset 8, 40 bytes */
+    uint8_t payload[MSG_INLINE];/* offset 48, 1024 bytes; if meta.overflow==1, first 24 bytes are OverflowHandle */
+    /* 16 bytes trailing pad → sizeof = 1088 */
 } __attribute__((aligned(64))) Slot;
 ```
 

@@ -43,6 +43,7 @@ This project shines where **latency** and **throughput** are critical, and **cro
 - **Cross-Language FFI**: First-class support for Python, C, Go, etc.
 - **Persistence**: Channels survive process restarts (until SHM is cleared).
 - **Batching**: Supports Atomic Batch Commits for bulk operations.
+- **Large Message Support**: Overflow messages (>1KB) automatically stored in cross-process shared memory (up to 50MB+). See [Large Payload Testing](docs/LARGE_PAYLOAD_TESTING.md).
 
 ## 🛠️ Quick Start
 

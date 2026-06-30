@@ -10,7 +10,9 @@ use std::mem::{align_of, size_of};
 #[test]
 fn test_message_meta_layout() {
     // Calculate expected size with 8-byte alignment (due to u64 fields).
-    let raw = 8 + 8 + 4 + 4 + 4 + 2 + 2 + 4; // 36 bytes of fields
+    // Fields: message_id(8)+timestamp_ns(8)+channel_id(4)+message_type(4)+
+    //         sender_pid(4)+sender_runtime(2)+flags(2)+payload_len(4)+overflow(1) = 37 bytes
+    let raw = 8 + 8 + 4 + 4 + 4 + 2 + 2 + 4 + 1; // 37 bytes of fields
     let aligned = (raw + 7) & !7; // round up to 8-byte multiple => 40
 
     let size = size_of::<MessageMeta>(); // get the size of the MessageMeta struct

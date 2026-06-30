@@ -81,7 +81,7 @@ graph TB
 
 - **Size**: 1088 bytes (64-byte aligned)
 - **Purpose**: Single message container
-- **Contains**: Sequence number, MessageMeta, payload (up to 960 bytes)
+- **Contains**: Sequence number, MessageMeta, payload (up to 1024 bytes inline; larger messages spill to SFU)
 
 ## Memory Layout
 
@@ -101,8 +101,9 @@ graph TB
 │ │ │   flags: 0                                          │ │ │
 │ │ │   capacity: 1024                                    │ │ │
 │ │ │   band_offset: 98432                                │ │ │
-│ │ │   tail: CachePadded<AtomicU64> (64 bytes)           │ │ │
-│ │ │   head: CachePadded<AtomicU64> (64 bytes)           │ │ │
+│ │ │   signal: AtomicU32                                 │ │ │
+│ │ │   tail: CachePadded<AtomicU64> (128 bytes on x86)   │ │ │
+│ │ │   head: CachePadded<AtomicU64> (128 bytes on x86)   │ │ │
 │ │ └─────────────────────────────────────────────────────┘ │ │
 │ │ ChannelEntry[1] (384 bytes)                             │ │
 │ │ ChannelEntry[2] (384 bytes)                             │ │
@@ -125,8 +126,9 @@ graph TB
 │ │ │   sender_runtime: u16                               │ │
 │ │ │   flags: u16                                        │ │
 │ │ │   payload_len: u32                                  │ │
-│ │ │ Padding: 16 bytes                                   │ │
-│ │ │ Payload: 960 bytes (actual data)                    │ │
+│ │ │   overflow: u8 (1=SFU handle, 0=inline)             │ │
+│ │ │ Payload: 1024 bytes (offset 48, inline or handle)   │ │
+│ │ │ Trailing pad: 16 bytes (to reach 1088)              │ │
 │ │ └─────────────────────────────────────────────────────┘ │
 │ │ Slot[1] (1088 bytes)                                    │
 │ │ ...                                                     │
@@ -215,7 +217,7 @@ The system uses a **lock-free ring buffer** with atomic operations:
 
 - **Channels**: Up to 256 independent channels
 - **Processes**: Unlimited (limited by OS)
-- **Message size**: Up to 960 bytes inline (larger messages need external storage)
+- **Message size**: Up to 1024 bytes inline; larger messages automatically spill to SFU
 
 ## Design Decisions
 
@@ -239,7 +241,7 @@ The system uses a **lock-free ring buffer** with atomic operations:
 
 ## Limitations
 
-1. **Message size**: Maximum 960 bytes inline
+1. **Message size**: Maximum 1024 bytes inline (overflow threshold is 921 bytes = 90% of 1024; larger messages spill to SFU)
 2. **Channel count**: Maximum 256 channels per shared memory region
 3. **Platform**: Currently Linux-only (uses `/dev/shm`)
 4. **Byte order**: Little-endian only (x86, ARM)

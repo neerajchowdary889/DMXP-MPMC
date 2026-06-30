@@ -67,17 +67,16 @@ class GlobalHeader(ctypes.Structure):
 
 ### Field Layout
 
-| Offset | Size | Type                   | Field       | Description                      |
-| ------ | ---- | ---------------------- | ----------- | -------------------------------- |
-| 0      | 4    | u32                    | channel_id  | Logical channel identifier       |
-| 4      | 4    | u32                    | flags       | Channel flags (reserved)         |
-| 8      | 8    | u64                    | capacity    | Number of slots in ring buffer   |
-| 16     | 8    | u64                    | band_offset | Byte offset to ring buffer start |
-| 24     | 104  | -                      | \_pad1      | Padding to offset 128            |
-| 128    | 64   | CachePadded<AtomicU64> | tail        | Producer cursor (write position) |
-| 192    | 64   | -                      | \_pad2      | Padding between tail and head    |
-| 256    | 64   | CachePadded<AtomicU64> | head        | Consumer cursor (read position)  |
-| 320    | 64   | -                      | \_pad3      | Padding to 384 bytes             |
+| Offset | Size | Type                   | Field       | Description                                |
+| ------ | ---- | ---------------------- | ----------- | ------------------------------------------ |
+| 0      | 4    | u32                    | channel_id  | Logical channel identifier                 |
+| 4      | 4    | u32                    | flags       | Channel flags (reserved)                   |
+| 8      | 8    | u64                    | capacity    | Number of slots in ring buffer             |
+| 16     | 8    | u64                    | band_offset | Byte offset to ring buffer start           |
+| 24     | 4    | AtomicU32              | signal      | Futex word for blocking consumer wakeup    |
+| 28     | 100  | -                      | \_pad1      | Padding to offset 128                      |
+| 128    | 128  | CachePadded<AtomicU64> | tail        | Producer cursor (write position); value at offset 128 |
+| 256    | 128  | CachePadded<AtomicU64> | head        | Consumer cursor (read position); value at offset 256  |
 
 ### Rust Definition
 
@@ -88,13 +87,15 @@ pub struct ChannelEntry {
     pub flags: u32,
     pub capacity: u64,
     pub band_offset: u64,
-    pub tail: CachePadded<AtomicU64>,
-    pub head: CachePadded<AtomicU64>,
+    pub signal: AtomicU32,          // futex word (offset 24)
+    // 100 bytes implicit padding to offset 128
+    pub tail: CachePadded<AtomicU64>, // 128 bytes on x86_64 (offset 128)
+    pub head: CachePadded<AtomicU64>, // 128 bytes on x86_64 (offset 256)
     pub _pad: [u64; 0],
 }
 ```
 
-### Python Definition
+### Python Definition (x86_64)
 
 ```python
 class ChannelEntry(ctypes.Structure):
@@ -103,43 +104,35 @@ class ChannelEntry(ctypes.Structure):
         ("flags", ctypes.c_uint32),
         ("capacity", ctypes.c_uint64),
         ("band_offset", ctypes.c_uint64),
-        ("_pad1", ctypes.c_uint8 * 104),
-        ("tail", CachePadded),  # 64 bytes
-        ("head", CachePadded),  # 64 bytes
-        ("_pad2", ctypes.c_uint8 * 64),
+        ("signal", ctypes.c_uint32),       # futex word (offset 24)
+        ("_pad1", ctypes.c_uint8 * 100),   # padding to offset 128
+        ("tail", CachePadded),             # 128 bytes; u64 value at offset 128
+        ("head", CachePadded),             # 128 bytes; u64 value at offset 256
     ]
 ```
 
 ## CachePadded<AtomicU64>
 
-**Total Size**: 64 bytes  
-**Alignment**: 8 bytes  
+**Total Size**: 128 bytes on x86_64 / aarch64; 64 bytes on arm/mips/riscv  
+**Alignment**: same as total size (platform-specific)  
 **Purpose**: Prevent false sharing between cache lines
 
-### Field Layout
+### Field Layout (x86_64 / aarch64)
 
 | Offset | Size | Type      | Field | Description             |
 | ------ | ---- | --------- | ----- | ----------------------- |
 | 0      | 8    | AtomicU64 | value | The actual atomic value |
-| 8      | 56   | -         | \_pad | Padding to 64 bytes     |
+| 8      | 120  | -         | \_pad | Padding to 128 bytes    |
 
-### Rust Definition
+> **Cross-language note**: When reading `tail` or `head` from raw bytes, only the first 8 bytes of each CachePadded slot matter. The value always lives at the start of the 128-byte block.
 
-```rust
-#[repr(C, align(64))]
-pub struct CachePadded<T> {
-    value: T,
-    _pad: [u8; 64 - std::mem::size_of::<T>()],
-}
-```
-
-### Python Definition
+### Python Definition (x86_64)
 
 ```python
 class CachePadded(ctypes.Structure):
     _fields_ = [
-        ("value", AtomicU64),
-        ("_pad", ctypes.c_uint8 * 56),
+        ("value", ctypes.c_uint64),
+        ("_pad", ctypes.c_uint8 * 120),  # 128 bytes total on x86_64
     ]
 ```
 
@@ -154,10 +147,9 @@ class CachePadded(ctypes.Structure):
 | Offset | Size | Type        | Field    | Description                         |
 | ------ | ---- | ----------- | -------- | ----------------------------------- |
 | 0      | 8    | AtomicU64   | sequence | Sequence number for synchronization |
-| 8      | 40   | MessageMeta | meta     | Message metadata                    |
-| 48     | 16   | -           | \_pad1   | Padding to 64 bytes                 |
-| 64     | 960  | u8[960]     | payload  | Message payload data                |
-| 1024   | 64   | -           | \_pad2   | Padding to 1088 bytes               |
+| 8      | 40   | MessageMeta | meta     | Message metadata (40 bytes, see below) |
+| 48     | 1024 | u8[1024]    | payload  | Inline payload or OverflowHandle (24 bytes) if `meta.overflow == 1` |
+| 1072   | 16   | -           | \_pad    | Trailing pad to reach 1088 (align(64)) |
 
 ### Rust Definition
 
@@ -166,8 +158,7 @@ class CachePadded(ctypes.Structure):
 pub struct Slot {
     pub sequence: AtomicU64,
     pub meta: MessageMeta,
-    pub _pad1: [u8; 16],
-    pub payload: [u8; MSG_INLINE],
+    pub payload: [u8; MSG_INLINE],  // MSG_INLINE = 1024; starts at offset 48
 }
 ```
 
@@ -182,8 +173,10 @@ slot_data = mm.read(1088)
 # Parse fields
 sequence = int.from_bytes(slot_data[0:8], 'little')
 # MessageMeta starts at offset 8
-# Payload starts at offset 64
-payload = slot_data[64:64+payload_len]
+# payload_len is at MessageMeta offset 32 → slot offset 40
+payload_len = int.from_bytes(slot_data[40:44], 'little')
+# Payload starts at offset 48 (no intermediate padding)
+payload = slot_data[48:48+payload_len]
 ```
 
 ## MessageMeta
@@ -204,13 +197,14 @@ payload = slot_data[64:64+payload_len]
 | 28     | 2    | u16  | sender_runtime | Runtime identifier                 |
 | 30     | 2    | u16  | flags          | Message flags                      |
 | 32     | 4    | u32  | payload_len    | Actual payload length in bytes     |
-| 36     | 4    | -    | \_pad          | Padding to 40 bytes                |
+| 36     | 1    | u8   | overflow       | 0 = inline payload; 1 = payload holds an `OverflowHandle` (24 bytes) pointing to SFU |
+| 37     | 3    | -    | \_pad          | Trailing padding to 40 bytes       |
 
 ### Rust Definition
 
 ```rust
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MessageMeta {
     pub message_id: u64,
     pub timestamp_ns: u64,
@@ -220,6 +214,8 @@ pub struct MessageMeta {
     pub sender_runtime: u16,
     pub flags: u16,
     pub payload_len: u32,
+    pub overflow: u8,  // 1 = payload is an OverflowHandle, 0 = inline
+    // 3 bytes implicit trailing padding (struct size = 40)
 }
 ```
 
@@ -227,7 +223,7 @@ pub struct MessageMeta {
 
 ```python
 class MessageMeta(ctypes.Structure):
-    _pack_ = 1
+    # Do NOT use _pack_ = 1; the struct has 3 bytes of trailing padding.
     _fields_ = [
         ("message_id", ctypes.c_uint64),
         ("timestamp_ns", ctypes.c_uint64),
@@ -237,6 +233,8 @@ class MessageMeta(ctypes.Structure):
         ("sender_runtime", ctypes.c_uint16),
         ("flags", ctypes.c_uint16),
         ("payload_len", ctypes.c_uint32),
+        ("overflow", ctypes.c_uint8),
+        # ctypes adds 3 bytes of padding automatically → sizeof = 40
     ]
 ```
 
@@ -264,9 +262,11 @@ slot_offset = band_offset + (slot_index × 1088)
 ### Field Offsets Within Slot
 
 ```
-sequence_offset = slot_offset + 0
-meta_offset = slot_offset + 8
-payload_offset = slot_offset + 64
+sequence_offset  = slot_offset + 0
+meta_offset      = slot_offset + 8
+overflow_offset  = slot_offset + 44   (meta_offset + 36)
+payload_len_off  = slot_offset + 40   (meta_offset + 32)
+payload_offset   = slot_offset + 48   (no intermediate padding)
 ```
 
 ## Atomic Operations
@@ -313,7 +313,8 @@ When implementing a consumer/producer, verify:
 - [ ] GlobalHeader.version == 1
 - [ ] ChannelEntry.capacity > 0 (channel exists)
 - [ ] Slot.sequence == head + 1 (slot is ready)
-- [ ] MessageMeta.payload_len <= 960 (valid payload size)
+- [ ] MessageMeta.payload_len <= 1024 (valid inline size) or == 24 if overflow == 1 (OverflowHandle)
+- [ ] MessageMeta.overflow == 0 (inline) or 1 (SFU handle) — handle accordingly
 - [ ] All offsets are correctly calculated
 - [ ] Byte order is little-endian
 - [ ] Alignment requirements are met
@@ -355,9 +356,10 @@ if head != tail:
     if sequence == head + 1:
         # Read message metadata
         payload_len = int.from_bytes(slot_data[40:44], 'little')
+        overflow    = slot_data[44]  # 1 = SFU handle, 0 = inline
 
-        # Read payload
-        payload = slot_data[64:64+payload_len]
+        # Payload starts at offset 48 (no intermediate padding after MessageMeta)
+        payload = slot_data[48:48+payload_len]
 
         print(f"Received: {payload.decode('utf-8')}")
 
@@ -373,7 +375,7 @@ mm.close()
 
 ```rust
 const MAX_CHANNELS: usize = 256;
-const MSG_INLINE: usize = 960;
+const MSG_INLINE: usize = 1024;
 const SLOT_SIZE: usize = 1088;
 const CHANNEL_ENTRY_SIZE: usize = 384;
 const GLOBAL_HEADER_SIZE: usize = 98432;
